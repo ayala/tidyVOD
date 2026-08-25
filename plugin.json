@@ -1,11 +1,11 @@
 {
   "name": "tidyVOD",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
-  "author": "tidyVOD contributors",
+  "author": "ayala",
   "license": "MIT",
   "min_dispatcharr_version": "v0.24.0",
-  "help_url": "https://github.com/dispatcharr/dispatcharr/blob/main/Plugins.md",
+  "help_url": "https://github.com/ayala/tidyVOD",
   "fields": [
     {"id":"category_editor_help","label":"Category editor","type":"info","value":"Enter a clean name beside any provider category. Give several categories the same clean name to combine them. Leave a field blank to keep the original name."},
     {"id":"account_names","label":"Limit to provider accounts","type":"string","default":"","help_text":"Optional comma-separated Dispatcharr M3U account names. Blank means all active accounts."},
