@@ -1,4 +1,28 @@
 {
+  "generated_at": "2026-08-25T19:08:00Z",
+  "manifest": {
+    "registry_url": "https://github.com/ayala/tidyVOD",
+    "registry_name": "tidyVOD Plugin Repo",
+    "root_url": "https://raw.githubusercontent.com/ayala/tidyVOD/main",
+    "plugins": [
+      {
+        "slug": "tidyvod",
+        "name": "tidyVOD",
+        "description": "Rename, combine, and export curated VOD categories with optional text-free poster prep and tidy m3u/xmltv output.",
+        "author": "ayala",
+        "license": "MIT",
+        "last_updated": "2026-08-25T19:08:00Z",
+        "latest_version": "0.6.3",
+        "latest_md5": "57670f58e28309110f9eeb5fc0957958",
+        "latest_sha256": "2510296fa347fdc92dfc7efc4ab46b9c90d6573c8b0724166671ab1257d39ce7",
+        "latest_url": "releases/v0.6.3/tidyvod-v0.6.3.zip",
+        "latest_size": 52,
+        "min_dispatcharr_version": "v0.24.0",
+        "icon_url": "logo.png",
+        "repo_url": "https://github.com/ayala/tidyVOD"
+      }
+    ]
+  },
   "registry_name": "tidyVOD Plugin Repo",
   "root_url": "https://raw.githubusercontent.com/ayala/tidyVOD/main",
   "plugins": [
@@ -8,12 +32,12 @@
       "description": "Rename, combine, and export curated VOD categories with optional text-free poster prep and tidy m3u/xmltv output.",
       "author": "ayala",
       "latest_version": "0.6.3",
-      "last_updated": "2026-08-25T18:40:00Z",
+      "last_updated": "2026-08-25T19:08:00Z",
       "license": "MIT",
       "repo_url": "https://github.com/ayala/tidyVOD",
       "latest_url": "releases/v0.6.3/tidyvod-v0.6.3.zip",
       "latest_sha256": "2510296fa347fdc92dfc7efc4ab46b9c90d6573c8b0724166671ab1257d39ce7",
-      "latest_size": 51,
+      "latest_size": 52,
       "icon_url": "logo.png",
       "min_dispatcharr_version": "v0.24.0"
     }
