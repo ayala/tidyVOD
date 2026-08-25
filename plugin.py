@@ -48,9 +48,10 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.6.2"
+    version = "0.6.5"
     description = "Rename, combine, and export curated VOD categories in one plugin."
-    author = "tidyVOD contributors"
+    author = "ayala"
+    help_url = "https://github.com/ayala/tidyVOD"
 
     BASE_FIELDS = [
         {
