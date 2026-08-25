@@ -11,13 +11,14 @@ tidyVOD can also:
 - replace provider artwork only for categories explicitly marked `[CLEAN]` or `[EN]`;
 - preview changes before writing them;
 - reapply mappings automatically after an M3U refresh;
-- restore category and title values it previously changed.
+- restore category and title values it previously changed;
+- export curated categories as `.m3u` (and optional `.xml` XMLTV stub) for downstream tools like m3u4u in one click.
 
 The original stream IDs, provider credentials, and playback URLs are never changed.
 
 ## Install
 
-Upload `tidyvod-v0.5.1.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**. The internal plugin key remains unchanged so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** before **Apply**.
+Upload `tidyvod-v0.6.2.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**. The internal plugin key remains unchanged so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
 Dispatcharr v0.24.0 or newer is required.
 

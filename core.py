@@ -150,3 +150,13 @@ def parse_account_names(raw: Any) -> set[str]:
     if isinstance(raw, str):
         return {part.strip().casefold() for part in raw.split(",") if part.strip()}
     raise ConfigurationError("account_names must be a comma-separated string")
+
+
+def safe_filename(value: str, fallback: str = "tidym3u-export") -> str:
+    """Create a safe file name stem from user input."""
+    value = value.strip()
+    if not value:
+        return fallback
+    value = re.sub(r"[^a-zA-Z0-9._-]", "-", value)
+    value = re.sub(r"-+", "-", value).strip(".-")
+    return value or fallback

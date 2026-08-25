@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone as datetime_timezone
+from pathlib import Path
 import hashlib
 import json
 import os
@@ -17,6 +19,7 @@ from django.db import IntegrityError, transaction
 
 from .core import (
     ConfigurationError,
+    safe_filename,
     category_override,
     category_override_details,
     category_target,
@@ -30,10 +33,23 @@ from .core import (
 MARKER = "vodarranger"
 
 
+@dataclass(frozen=True)
+class ExportEntry:
+    content_type: str
+    source_category_id: int | None
+    source_category: str
+    export_category: str
+    item_id: int
+    item_name: str
+    stream_url: str
+    logo_url: str | None
+    tvg_id: str | None
+
+
 class Plugin:
     name = "tidyVOD"
-    version = "0.5.1"
-    description = "Rename, combine, back up, and optionally clean artwork for curated VOD categories."
+    version = "0.6.2"
+    description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "tidyVOD contributors"
 
     BASE_FIELDS = [
@@ -90,6 +106,38 @@ class Plugin:
             "type": "text",
             "default": "",
             "help_text": "Back up mappings fills this after a page reload. Copy it into a local .json file, or paste a saved backup here and use Import pasted backup.",
+        },
+        {
+            "id": "m3u_export_help",
+            "label": "M3U export",
+            "type": "info",
+            "value": "Export your curated categories into tidy m3u/xmltv files for tools like m3u4u.",
+        },
+        {
+            "id": "output_directory",
+            "label": "Output directory",
+            "type": "string",
+            "default": "/data/plugins/.tidym3u_exports",
+            "help_text": "Directory where playlist files are written. One stable name plus timestamped backups are created.",
+        },
+        {
+            "id": "filename_prefix",
+            "label": "Filename prefix",
+            "type": "string",
+            "default": "tidym3u-playlist",
+            "help_text": "Prefix for playlist/XMLTV output files.",
+        },
+        {
+            "id": "emit_xmltv",
+            "label": "Also write XMLTV stub",
+            "type": "boolean",
+            "default": True,
+        },
+        {
+            "id": "auto_export",
+            "label": "Export after M3U refresh",
+            "type": "boolean",
+            "default": False,
         },
         {
             "id": "auto_apply",
@@ -160,9 +208,27 @@ class Plugin:
             "confirm": {"title": "Restore VOD values?", "message": "This only restores values tracked by tidyVOD and earlier compatible builds."},
         },
         {
+            "id": "preview_export",
+            "label": "Preview export",
+            "description": "Compute counts for the current settings without writing files.",
+            "button_label": "Preview export",
+            "button_color": "blue",
+        },
+        {
+            "id": "export_playlist",
+            "label": "Export playlist",
+            "description": "Write M3U (+ optional XMLTV) files to disk.",
+            "button_label": "Export",
+            "button_color": "green",
+            "confirm": {
+                "title": "Export curated playlist?",
+                "message": "This writes/overwrites the stable output files and creates a timestamped snapshot.",
+            },
+        },
+        {
             "id": "on_m3u_refresh",
-            "label": "Auto-apply after M3U refresh",
-            "description": "Internal event action controlled by the auto-apply setting.",
+            "label": "Auto-apply and export after M3U refresh",
+            "description": "Internal event action controlled by the auto-apply and export settings.",
             "events": ["m3u_refresh"],
         },
     ]
@@ -182,13 +248,16 @@ class Plugin:
             }]
         advanced_ids = [
             "advanced_rules_help", "category_rules", "title_rules",
-            "portable_mapping_json",
+        ]
+        export_ids = [
+            "m3u_export_help", "output_directory", "filename_prefix", "emit_xmltv", "auto_export"
         ]
         return (
             [base["category_editor_help"], base["account_names"]]
             + [base["clean_art_help"], base["tmdb_api_key"]]
             + dynamic
-            + [base["auto_apply"]]
+            + [base["portable_mapping_json"], base["auto_apply"]]
+            + [base[field_id] for field_id in export_ids]
             + [base[field_id] for field_id in advanced_ids]
         )
 
@@ -255,9 +324,11 @@ class Plugin:
         logger = context.get("logger")
         try:
             if action == "on_m3u_refresh":
-                if not settings.get("auto_apply", False):
-                    return {"status": "ok", "message": "Automatic apply is disabled"}
-                return self._apply(settings, logger, dry_run=False)
+                return self._on_m3u_refresh(settings, logger)
+            if action == "preview_export":
+                return self._run_export(settings, logger, dry_run=True)
+            if action == "export_playlist":
+                return self._run_export(settings, logger, dry_run=False)
             if action == "preview":
                 return self._apply(settings, logger, dry_run=True)
             if action == "backup_mappings":
@@ -275,6 +346,42 @@ class Plugin:
             return {"status": "error", "message": f"Unknown action: {action}"}
         except ConfigurationError as exc:
             return {"status": "error", "message": str(exc)}
+        except Exception as exc:
+            if logger is not None:
+                logger.exception("tidyVOD failed")
+            return {"status": "error", "message": str(exc)}
+
+    def _on_m3u_refresh(self, settings: dict[str, Any], logger: Any) -> dict[str, Any]:
+        auto_apply = bool(settings.get("auto_apply", False))
+        auto_export = bool(settings.get("auto_export", False))
+
+        if not auto_apply and not auto_export:
+            return {"status": "ok", "message": "Automatic apply/export is disabled"}
+
+        results = []
+        messages = []
+        overall_status = "ok"
+        for action_name in ("apply", "export"):
+            if action_name == "apply" and auto_apply:
+                result = self._apply(settings, logger, dry_run=False)
+            elif action_name == "export" and auto_export:
+                result = self._run_export(settings, logger, dry_run=False)
+            else:
+                continue
+            results.append(result)
+            result_status = result.get("status")
+            if result_status == "error":
+                overall_status = "error"
+            messages.append(result.get("message", f"{action_name} completed"))
+        if auto_apply and auto_export:
+            message = "Auto-refresh completed: " + " | ".join(messages)
+        else:
+            message = messages[-1] if messages else ""
+        return {
+            "status": overall_status,
+            "message": message,
+            "results": results,
+        }
 
     def _account_filter(self, settings: dict[str, Any]) -> dict[str, Any]:
         from apps.m3u.models import M3UAccount
@@ -291,6 +398,263 @@ class Plugin:
             ]
             filters["m3u_account_id__in"] = account_ids
         return filters
+
+    @staticmethod
+    def _coerce_url(value: Any) -> str | None:
+        if not value:
+            return None
+        if isinstance(value, (list, tuple)):
+            if not value:
+                return None
+            value = value[0]
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                return None
+        if not value:
+            return None
+        if not isinstance(value, str):
+            value = str(value)
+        value = value.strip()
+        if not value:
+            return None
+        if value.startswith("/") and not value.lower().startswith("http"):
+            return None
+        return value
+
+    @staticmethod
+    def _tvg_id(item: Any) -> str | None:
+        for key in ("tvg_id", "epg_id", "imdb_id", "tmdb_id", "id"):
+            value = getattr(item, key, None)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return None
+
+    @staticmethod
+    def _item_logo_url(item: Any) -> str | None:
+        for key in ("logo",):
+            value = getattr(item, key, None)
+            if not value:
+                continue
+            logo_url = getattr(value, "url", None)
+            if logo_url:
+                return str(logo_url)
+        for key in ("logo_url", "poster_url", "image_url", "artwork_url"):
+            value = getattr(item, key, None)
+            if value:
+                text = str(value).strip()
+                if text:
+                    return text
+        return None
+
+    @staticmethod
+    def _stream_url_from_relation(relation: Any, item: Any, content_type: str) -> str | None:
+        for obj in (relation, item):
+            if obj is None:
+                continue
+            for attr in ("stream_url", "url", "play_url", "player_url", "m3u_url", "direct_url"):
+                value = Plugin._coerce_url(getattr(obj, attr, None))
+                if value:
+                    return value
+
+        # Xtream providers commonly expose a stream ID plus account credentials.
+        stream_id = getattr(relation, "stream_id", None) or getattr(item, "stream_id", None)
+        if stream_id:
+            account = getattr(relation, "m3u_account", None)
+            if account is not None:
+                base = (
+                    getattr(account, "base_url", None)
+                    or getattr(account, "url", None)
+                    or getattr(account, "api_url", None)
+                )
+                username = getattr(account, "username", None) or getattr(account, "user", None)
+                password = getattr(account, "password", None)
+                if base and username and password:
+                    base = str(base).rstrip("/")
+                    segment = "movie" if content_type == "movie" else "series"
+                    return f"{base}/{segment}/{int(stream_id)}?username={username}&password={password}"
+        return None
+
+    def _collect_entries(self, settings: dict[str, Any]) -> tuple[list[ExportEntry], Counter]:
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation
+
+        account_filter = self._account_filter(settings)
+        relation_specs = [
+            ("movie", M3UMovieRelation, "movie"),
+            ("series", M3USeriesRelation, "series"),
+        ]
+        entries: list[ExportEntry] = []
+        counts: Counter[str] = Counter()
+
+        for content_type, relation_model, item_field in relation_specs:
+            queryset = relation_model.objects.filter(**account_filter).select_related("category", item_field, "m3u_account")
+            for relation in queryset.iterator(chunk_size=1000):
+                item = getattr(relation, item_field)
+                if item is None:
+                    counts["missing_item"] += 1
+                    continue
+                source_category = relation.category.name if relation.category else "Uncategorized"
+                source_category_id = relation.category_id
+                target_category = category_override(settings, content_type, source_category_id) or source_category
+                if not target_category:
+                    target_category = source_category
+                url = Plugin._stream_url_from_relation(relation, item, content_type)
+                if not url:
+                    counts["missing_url"] += 1
+                    continue
+                item_name = str(getattr(item, "name", "") or "").strip() or str(
+                    getattr(item, "original_name", "") or ""
+                ).strip()
+                if not item_name:
+                    item_name = f"{content_type.title()} {item.pk}"
+                entry = ExportEntry(
+                    content_type=content_type,
+                    source_category_id=source_category_id,
+                    source_category=source_category,
+                    export_category=target_category,
+                    item_id=item.pk,
+                    item_name=item_name,
+                    stream_url=url,
+                    logo_url=Plugin._item_logo_url(item),
+                    tvg_id=Plugin._tvg_id(item),
+                )
+                entries.append(entry)
+                counts["items"] += 1
+                counts[f"category:{target_category}"] += 1
+
+        counts["categories"] = len({entry.export_category for entry in entries})
+        return entries, counts
+
+    @staticmethod
+    def _m3u_line_escape(value: str) -> str:
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace('"', "\\\"")
+            .replace("\n", " ")
+            .strip()
+        )
+
+    def _write_m3u(self, entries: list[ExportEntry], output: Path) -> int:
+        lines = ["#EXTM3U"]
+        for entry in sorted(entries, key=lambda item: (item.export_category.casefold(), item.item_name.casefold())):
+            tvg_id = entry.tvg_id or f"{entry.content_type}:{entry.item_id}"
+            attrs = [
+                f'tvg-id="{self._m3u_line_escape(tvg_id)}"',
+                f'group-title="{self._m3u_line_escape(entry.export_category)}"',
+            ]
+            if entry.logo_url:
+                attrs.append(f'tvg-logo="{self._m3u_line_escape(entry.logo_url)}"')
+            line = f"#EXTINF:-1 {' '.join(attrs)},{self._m3u_line_escape(entry.item_name)}"
+            lines.append(line)
+            lines.append(entry.stream_url)
+
+        with output.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return len(entries)
+
+    def _write_xmltv(self, entries: list[ExportEntry], output: Path) -> int:
+        by_channel = {}
+        for index, entry in enumerate(entries):
+            key = entry.tvg_id or f"{entry.content_type}:{entry.item_id}:{index}"
+            if key in by_channel:
+                by_channel[f"{key}-{index}"] = entry
+            else:
+                by_channel[key] = entry
+
+        with output.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+            handle.write('<tv generator-info-name="tidyVOD">\n')
+            for key, entry in by_channel.items():
+                handle.write(f'  <channel id="{self._m3u_line_escape(key)}">\n')
+                handle.write(f'    <display-name>{self._m3u_line_escape(entry.item_name)}</display-name>\n')
+                if entry.logo_url:
+                    handle.write(f'    <icon src="{self._m3u_line_escape(entry.logo_url)}" />\n')
+                handle.write("  </channel>\n")
+            handle.write("</tv>\n")
+        return len(by_channel)
+
+    def _run_export(self, settings: dict[str, Any], logger: Any, dry_run: bool) -> dict[str, Any]:
+        entries, counts = self._collect_entries(settings)
+
+        if not entries:
+            return {
+                "status": "error",
+                "changes": dict(counts),
+                "message": (
+                    "No stream URLs were resolved. Enable VOD entries and check whether items have valid stream links. "
+                    f"Missing URLs: {counts.get('missing_url', 0)}"
+                ),
+            }
+
+        if dry_run:
+            grouped = defaultdict(int)
+            for entry in entries:
+                grouped[entry.export_category] += 1
+            return {
+                "status": "ok",
+                "dry_run": True,
+                "changes": dict(counts),
+                "samples": [
+                    {"type": category, "change": f"{count} items"} for category, count in sorted(grouped.items())[:25]
+                ],
+                "message": (
+                    f"Preview: {counts['items']} items across {counts['categories']} groups, "
+                    f"{counts['missing_url']} with unresolved URLs."
+                ),
+            }
+
+        output_dir = Path(str(settings.get("output_directory", "") or "/data/plugins/.tidym3u_exports")).expanduser()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        prefix = safe_filename(str(settings.get("filename_prefix", "") or "tidym3u-export"))
+        timestamp = datetime.now(datetime_timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+        m3u_name = f"{prefix}-{timestamp}.m3u"
+        stable_m3u = f"{prefix}.m3u"
+        m3u_path = output_dir / m3u_name
+        stable_m3u_path = output_dir / stable_m3u
+        m3u_count = self._write_m3u(entries, m3u_path)
+        self._write_m3u(entries, stable_m3u_path)
+
+        xmltv_path = None
+        xmltv_count = 0
+        if settings.get("emit_xmltv", True):
+            xmltv_name = f"{prefix}-{timestamp}.xml"
+            stable_xmltv = f"{prefix}.xml"
+            xmltv_path = output_dir / xmltv_name
+            stable_xmltv_path = output_dir / stable_xmltv
+            xmltv_count = self._write_xmltv(entries, xmltv_path)
+            self._write_xmltv(entries, stable_xmltv_path)
+
+        manifest = {
+            "generated_at": datetime.now(datetime_timezone.utc).isoformat(),
+            "plugin": self.name,
+            "version": self.version,
+            "entries": m3u_count,
+            "categories": counts["categories"],
+            "xmltv_channels": xmltv_count,
+        }
+        manifest_path = output_dir / f"{prefix}-manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+
+        return {
+            "status": "ok",
+            "dry_run": False,
+            "changes": dict(counts),
+            "message": (
+                f"Exported {m3u_count} entries ({counts['categories']} groups) to:\n"
+                f"- {m3u_path}\n"
+                f"- {stable_m3u_path}\n"
+                + (f"- {stable_xmltv_path}\n" if xmltv_path else "")
+                + f"Manifest: {manifest_path}"
+            ),
+        }
 
     @staticmethod
     def _mapping_backup_dir() -> str:
