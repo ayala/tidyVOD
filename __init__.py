@@ -1,0 +1,1 @@
+"""Dispatcharr tidyVOD plugin package."""
