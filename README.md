@@ -18,7 +18,15 @@ The original stream IDs, provider credentials, and playback URLs are never chang
 
 ## Install
 
-Upload `tidyvod-v0.6.2.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**. The internal plugin key remains unchanged so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
+For managed installs and GUI updates, add this URL under **Dispatcharr → Settings → Plugins → Manage Repositories**:
+
+```text
+https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
+```
+
+Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
+
+For a manual install, upload `releases/v0.6.4/tidyvod-v0.6.4.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 

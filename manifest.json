@@ -3,7 +3,7 @@
   "manifest": {
     "registry_url": "https://github.com/ayala/tidyVOD",
     "registry_name": "tidyVOD Plugin Repo",
-    "root_url": "https://raw.githubusercontent.com/ayala/tidyVOD/main",
+    "root_url": "https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main",
     "plugins": [
       {
         "slug": "tidyvod",
@@ -24,7 +24,7 @@
     ]
   },
   "registry_name": "tidyVOD Plugin Repo",
-  "root_url": "https://raw.githubusercontent.com/ayala/tidyVOD/main",
+  "root_url": "https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main",
   "plugins": [
     {
       "slug": "tidyvod",
