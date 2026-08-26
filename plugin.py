@@ -52,7 +52,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.7.0"
+    version = "0.7.1"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -309,6 +309,15 @@ class Plugin:
             rows = list(categories)
             if not rows:
                 continue
+            if content_type == "series" and fields:
+                # Field rows are rendered in a Mantine Stack. An empty info row
+                # creates one additional stack gap without adding visual clutter.
+                fields.append({
+                    "id": "movie_series_section_gap",
+                    "label": "",
+                    "type": "info",
+                    "value": "",
+                })
             fields.append({
                 "id": f"{content_type}_category_heading",
                 "label": label,

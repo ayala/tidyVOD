@@ -17,9 +17,12 @@ def load_plugin_module():
     django_db.IntegrityError = type("IntegrityError", (Exception,), {})
     django_db.close_old_connections = lambda: None
     django_db.transaction = types.SimpleNamespace(atomic=contextlib.nullcontext)
+    django_db_models = types.ModuleType("django.db.models")
+    django_db_models.Count = lambda *args, **kwargs: (args, kwargs)
     django.db = django_db
     sys.modules.setdefault("django", django)
     sys.modules.setdefault("django.db", django_db)
+    sys.modules.setdefault("django.db.models", django_db_models)
 
     package = types.ModuleType(PACKAGE)
     package.__path__ = [str(ROOT)]
@@ -77,6 +80,42 @@ class FakeCategoryManager:
         return self.categories[key], created
 
 
+class FakeAccountRelations:
+    def filter(self, **filters):
+        return self
+
+    def values_list(self, *args, **kwargs):
+        return self
+
+    def distinct(self):
+        return self
+
+    def __getitem__(self, item):
+        return ["Provider"]
+
+
+class FakeCategoryQuerySet(list):
+    def annotate(self, **annotations):
+        return self
+
+    def distinct(self):
+        return self
+
+    def order_by(self, *fields):
+        return self
+
+
+class FakeEditorCategoryManager:
+    def __init__(self, categories):
+        self.categories = categories
+
+    def filter(self, **filters):
+        return FakeCategoryQuerySet([
+            category for category in self.categories
+            if category.category_type == filters["category_type"]
+        ])
+
+
 class ReconciliationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -117,6 +156,46 @@ class ReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(len(movie_manager.updated), 1)
         self.assertEqual(result["changes"]["categories"], 1)
+
+    def test_category_editor_has_a_gap_between_movies_and_series(self):
+        categories = [
+            types.SimpleNamespace(
+                pk=12,
+                name="Movies",
+                category_type="movie",
+                item_count=10,
+                m3u_relations=FakeAccountRelations(),
+            ),
+            types.SimpleNamespace(
+                pk=22,
+                name="Series",
+                category_type="series",
+                item_count=5,
+                m3u_relations=FakeAccountRelations(),
+            ),
+        ]
+        sys.modules.setdefault("apps", types.ModuleType("apps"))
+        sys.modules.setdefault("apps.vod", types.ModuleType("apps.vod"))
+        vod_models = sys.modules.setdefault(
+            "apps.vod.models", types.ModuleType("apps.vod.models")
+        )
+        vod_models.VODCategory = types.SimpleNamespace(
+            objects=FakeEditorCategoryManager(categories)
+        )
+
+        fields = self.module.Plugin._category_editor_fields()
+        ids = [field["id"] for field in fields]
+
+        self.assertEqual(
+            ids,
+            [
+                "movie_category_heading",
+                "category_override_movie_12",
+                "movie_series_section_gap",
+                "series_category_heading",
+                "category_override_series_22",
+            ],
+        )
 
 
 if __name__ == "__main__":
