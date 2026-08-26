@@ -1,6 +1,6 @@
 {
   "name": "tidyVOD",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
   "author": "ayala",
   "license": "MIT",
@@ -9,8 +9,6 @@
   "fields": [
     {"id":"category_editor_help","label":"Category editor","type":"info","value":"Enter a clean name beside any provider category. Give several categories the same clean name to combine them. Leave a field blank to keep the original name."},
     {"id":"account_names","label":"Limit to provider accounts","type":"string","default":"","help_text":"Optional comma-separated Dispatcharr M3U account names. Blank means all active accounts."},
-    {"id":"clean_art_help","label":"Cover artwork (category opt-in)","type":"info","value":"Use [CLEAN] for language-neutral/textless art or [EN] for a cleaner English-title poster. Markers are stripped from exported names, and only marked source categories are eligible."},
-    {"id":"tmdb_api_key","label":"TMDB API key for cover artwork","type":"string","input_type":"password","default":"","help_text":"Optional when Dispatcharr already has TMDB_API_KEY configured. Used only by Prepare selected covers."},
     {"id":"advanced_rules_help","label":"Advanced rules (optional)","type":"info","value":"Regex rules are available for bulk patterns and title cleanup."},
     {"id":"category_rules","label":"Advanced category rules (JSON)","type":"text","default":"[]","help_text":"Ordered regex rules with pattern, target, and optional content_type."},
     {"id":"title_rules","label":"Title cleanup rules (JSON)","type":"text","default":"[]","help_text":"Ordered regex rules with pattern, replacement, and optional content_type."},
@@ -26,10 +24,9 @@
     {"id":"backup_mappings","label":"Back up category names","description":"Save a durable snapshot of every clean name you entered.","button_label":"Back up mappings","button_color":"blue"},
     {"id":"restore_mappings","label":"Restore category names","description":"Restore the latest saved clean-name snapshot into the category editor.","button_label":"Restore mappings","button_color":"red","confirm":{"title":"Restore saved category names?","message":"Current clean-name fields will be backed up first, then replaced by the latest saved snapshot."}},
     {"id":"import_mappings","label":"Import portable category-name backup","description":"Restore clean-name fields from JSON pasted into the portable backup field.","button_label":"Import pasted backup","button_color":"red","confirm":{"title":"Import pasted category names?","message":"Current clean-name fields will be backed up first, then replaced by the pasted snapshot."}},
-    {"id":"prepare_clean_art","label":"Prepare selected category artwork","description":"Find TMDB covers for up to 250 titles in [CLEAN] or [EN] categories.","button_label":"Prepare selected covers","button_color":"blue"},
     {"id":"preview","label":"Preview changes","description":"Count and sample changes without writing to the database.","button_label":"Preview","button_color":"blue"},
     {"id":"apply","label":"Apply changes","description":"Apply configured category and title rules.","button_label":"Apply","button_color":"green","confirm":{"title":"Apply VOD changes?","message":"A restore marker will be saved before each change."}},
-    {"id":"restore","label":"Restore plugin changes","description":"Restore category and title values, plus any legacy artwork changes.","button_label":"Restore","button_color":"red","confirm":{"title":"Restore VOD values?","message":"This only restores values tracked by tidyVOD and earlier compatible builds."}},
+    {"id":"restore","label":"Restore plugin changes","description":"Restore category and title values saved by this plugin.","button_label":"Restore","button_color":"red","confirm":{"title":"Restore VOD values?","message":"This only restores values tracked by tidyVOD and earlier compatible builds."}},
     {"id":"preview_export","label":"Preview export","description":"Compute counts for the current settings without writing files.","button_label":"Preview export","button_color":"blue"},
     {"id":"export_playlist","label":"Export playlist","description":"Write M3U (+ optional XMLTV) files to disk.","button_label":"Export","button_color":"green","confirm":{"title":"Export curated playlist?","message":"This writes/overwrites the stable output files and creates a timestamped snapshot."}},
     {"id":"on_m3u_refresh","label":"Auto-apply and export after M3U refresh","description":"Internal event action controlled by the auto-apply and export settings.","events":["m3u_refresh"]}

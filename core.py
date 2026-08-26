@@ -115,26 +115,14 @@ def category_target(
 def category_override(
     settings: dict[str, Any], content_type: str, category_id: Any
 ) -> str | None:
-    """Read a clean name entered in the friendly per-category editor."""
-    return category_override_details(settings, content_type, category_id)[0]
-
-
-def category_override_details(
-    settings: dict[str, Any], content_type: str, category_id: Any
-) -> tuple[str | None, str | None]:
-    """Return the clean category name and optional CLEAN/EN artwork mode."""
+    """Read a clean name, stripping obsolete artwork suffixes from saved settings."""
     value = str(
         settings.get(f"category_override_{content_type}_{category_id}", "") or ""
     ).strip()
-    marker = re.search(r"\s*\[(CLEAN|EN)\]\s*$", value, re.IGNORECASE)
-    art_mode = marker.group(1).lower() if marker else None
-    if marker:
-        value = value[:marker.start()].strip()
-        if not value:
-            raise ConfigurationError("[CLEAN] or [EN] must follow a non-empty clean category name")
+    value = re.sub(r"\s*\[(?:CLEAN|EN)\]\s*$", "", value, flags=re.IGNORECASE).strip()
     if len(value) > 255:
         raise ConfigurationError("a category clean name exceeds 255 characters")
-    return value or None, art_mode
+    return value or None
 
 
 def clean_title(name: str, content_type: str, rules: Iterable[TitleRule]) -> str:

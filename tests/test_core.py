@@ -3,7 +3,6 @@ import unittest
 from core import (
     ConfigurationError,
     category_override,
-    category_override_details,
     category_target,
     clean_title,
     compile_category_rules,
@@ -44,21 +43,16 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(category_override(settings, "movie", 13), "Netflix")
         self.assertIsNone(category_override(settings, "series", 12))
 
-    def test_clean_suffix_is_opt_in_and_not_part_of_category_name(self):
+    def test_obsolete_clean_suffix_is_removed_from_saved_name(self):
         settings = {"category_override_movie_12": " Netflix [clean] "}
-        self.assertEqual(category_override_details(settings, "movie", 12), ("Netflix", "clean"))
         self.assertEqual(category_override(settings, "movie", 12), "Netflix")
 
-    def test_clean_suffix_requires_a_clean_name(self):
-        with self.assertRaises(ConfigurationError):
-            category_override_details({"category_override_movie_12": "[CLEAN]"}, "movie", 12)
-
-    def test_en_suffix_selects_english_art_and_is_stripped(self):
+    def test_obsolete_en_suffix_is_removed_from_saved_name(self):
         settings = {"category_override_movie_12": " Foreign Movies [EN] "}
-        self.assertEqual(
-            category_override_details(settings, "movie", 12),
-            ("Foreign Movies", "en"),
-        )
+        self.assertEqual(category_override(settings, "movie", 12), "Foreign Movies")
+
+    def test_obsolete_marker_without_a_name_is_ignored(self):
+        self.assertIsNone(category_override({"category_override_movie_12": "[CLEAN]"}, "movie", 12))
 
 if __name__ == "__main__":
     unittest.main()

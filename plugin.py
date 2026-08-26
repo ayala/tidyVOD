@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone as datetime_timezone
 from pathlib import Path
 import hashlib
@@ -21,7 +20,7 @@ from .core import (
     ConfigurationError,
     safe_filename,
     category_override,
-    category_override_details,
+    category_override,
     category_target,
     clean_title,
     compile_category_rules,
@@ -48,7 +47,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.6.5"
+    version = "0.6.6"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -66,20 +65,6 @@ class Plugin:
             "type": "string",
             "default": "",
             "help_text": "Optional comma-separated Dispatcharr M3U account names. Blank means all active accounts.",
-        },
-        {
-            "id": "clean_art_help",
-            "label": "Cover artwork (category opt-in)",
-            "type": "info",
-            "value": "Use [CLEAN] for language-neutral/textless art or [EN] for a cleaner English-title poster. Markers are stripped from exported category names, and only marked source categories are eligible.",
-        },
-        {
-            "id": "tmdb_api_key",
-            "label": "TMDB API key for cover artwork",
-            "type": "string",
-            "input_type": "password",
-            "default": "",
-            "help_text": "Optional when Dispatcharr already has TMDB_API_KEY configured. Used only by Prepare selected covers.",
         },
         {
             "id": "advanced_rules_help",
@@ -179,13 +164,6 @@ class Plugin:
             },
         },
         {
-            "id": "prepare_clean_art",
-            "label": "Prepare selected category artwork",
-            "description": "Find TMDB covers for up to 250 titles in [CLEAN] or [EN] categories.",
-            "button_label": "Prepare selected covers",
-            "button_color": "blue",
-        },
-        {
             "id": "preview",
             "label": "Preview changes",
             "description": "Count and sample changes without writing to the database.",
@@ -203,7 +181,7 @@ class Plugin:
         {
             "id": "restore",
             "label": "Restore plugin changes",
-            "description": "Restore category and title values saved by this plugin, plus any legacy artwork changes.",
+            "description": "Restore category and title values saved by this plugin.",
             "button_label": "Restore",
             "button_color": "red",
             "confirm": {"title": "Restore VOD values?", "message": "This only restores values tracked by tidyVOD and earlier compatible builds."},
@@ -255,7 +233,6 @@ class Plugin:
         ]
         return (
             [base["category_editor_help"], base["account_names"]]
-            + [base["clean_art_help"], base["tmdb_api_key"]]
             + dynamic
             + [base["portable_mapping_json"], base["auto_apply"]]
             + [base[field_id] for field_id in export_ids]
@@ -338,8 +315,6 @@ class Plugin:
                 return self._restore_mappings(settings, logger)
             if action == "import_mappings":
                 return self._import_mappings(settings, logger)
-            if action == "prepare_clean_art":
-                return self._prepare_clean_art(settings, logger)
             if action == "apply":
                 return self._apply(settings, logger, dry_run=False)
             if action == "restore":
@@ -875,176 +850,8 @@ class Plugin:
             ),
         }
 
-    def _art_item_modes(self, settings: dict[str, Any]) -> dict[str, dict[int, str]]:
-        from apps.vod.models import M3UMovieRelation, M3USeriesRelation
-
-        account_filter = self._account_filter(settings)
-        scoped: dict[str, dict[int, str]] = {"movie": {}, "series": {}}
-        for content_type, relation_model, item_field in (
-            ("movie", M3UMovieRelation, "movie"),
-            ("series", M3USeriesRelation, "series"),
-        ):
-            relations = relation_model.objects.filter(**account_filter).select_related("category")
-            for relation in relations.iterator(chunk_size=1000):
-                props = relation.custom_properties or {}
-                marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
-                original_category_id = marker.get("original_category_id") if isinstance(marker, dict) else None
-                source_category_id = original_category_id or relation.category_id
-                _, art_mode = category_override_details(settings, content_type, source_category_id)
-                if art_mode:
-                    item_id = getattr(relation, f"{item_field}_id")
-                    current_mode = scoped[content_type].get(item_id)
-                    # A Movie/Series has one global logo in Dispatcharr. When
-                    # relations request both modes, explicit English wins.
-                    if current_mode is None or art_mode == "en":
-                        scoped[content_type][item_id] = art_mode
-        return scoped
-
-    @staticmethod
-    def _cached_clean_cover(item: Any, art_mode: str) -> str | None:
-        props = item.custom_properties or {}
-        marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
-        if not isinstance(marker, dict):
-            return None
-        if marker.get("clean_cover_tmdb_id") != str(item.tmdb_id or ""):
-            return None
-        if marker.get("clean_cover_mode") != art_mode:
-            return None
-        value = str(marker.get("clean_cover_url") or "").strip()
-        return value or None
-
-    def _prepare_clean_art(self, settings: dict[str, Any], logger: Any) -> dict[str, Any]:
-        import requests
-        from apps.vod.models import Movie, Series
-
-        scoped = self._art_item_modes(settings)
-        total = sum(len(items) for items in scoped.values())
-        if not total:
-            return {
-                "status": "error",
-                "message": "No categories are marked [CLEAN] or [EN]. Add a marker after a clean category name and save settings.",
-            }
-
-        candidates: list[tuple[str, Any, str]] = []
-        counts = Counter(total=total)
-        for media_type, model, item_modes in (
-            ("movie", Movie, scoped["movie"]),
-            ("tv", Series, scoped["series"]),
-        ):
-            for item in model.objects.filter(pk__in=item_modes).iterator(chunk_size=500):
-                art_mode = item_modes[item.pk]
-                if self._cached_clean_cover(item, art_mode):
-                    counts["ready"] += 1
-                    continue
-                if not item.tmdb_id:
-                    counts["missing_tmdb"] += 1
-                    continue
-                props = item.custom_properties or {}
-                marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
-                if (
-                    isinstance(marker, dict)
-                    and marker.get("clean_cover_checked") == str(item.tmdb_id)
-                    and marker.get("clean_cover_mode") == art_mode
-                ):
-                    counts["no_cover"] += 1
-                    continue
-                if len(candidates) < 250:
-                    candidates.append((media_type, item, art_mode))
-                else:
-                    counts["remaining"] += 1
-
-        if not candidates:
-            return {
-                "status": "ok",
-                "prepared": dict(counts),
-                "message": (
-                    f"{counts['ready']} clean covers are ready; {counts['missing_tmdb']} titles lack TMDB IDs; "
-                    f"{counts['no_cover']} have no usable TMDB poster. Run Preview."
-                ),
-            }
-
-        api_key = str(settings.get("tmdb_api_key", "") or os.environ.get("TMDB_API_KEY", "")).strip()
-        if not api_key:
-            return {
-                "status": "error",
-                "message": "Enter a TMDB API key or configure Dispatcharr's TMDB_API_KEY first.",
-            }
-
-        def fetch(candidate: tuple[str, Any, str]) -> tuple[str | None, str, str]:
-            media_type, item, art_mode = candidate
-            try:
-                response = requests.get(
-                    f"https://api.themoviedb.org/3/{media_type}/{item.tmdb_id}/images",
-                    params={"api_key": api_key, "language": "en", "include_image_language": "null"},
-                    timeout=12,
-                )
-                if response.status_code == 401:
-                    return None, art_mode, "unauthorized"
-                response.raise_for_status()
-                posters = (response.json() or {}).get("posters") or []
-            except (requests.RequestException, ValueError) as exc:
-                logger.warning("TMDB image lookup failed for %s %s: %s", media_type, item.tmdb_id, exc)
-                return None, art_mode, "error"
-            usable = [poster for poster in posters if poster.get("file_path")]
-            preferred = [
-                poster for poster in usable
-                if (poster.get("iso_639_1") is None if art_mode == "clean" else poster.get("iso_639_1") == "en")
-            ]
-            pool = preferred or usable
-            if not pool:
-                return None, art_mode, "ok"
-            best = max(
-                pool,
-                key=lambda poster: (
-                    float(poster.get("vote_average") or 0),
-                    int(poster.get("vote_count") or 0),
-                    int(poster.get("width") or 0) * int(poster.get("height") or 0),
-                ),
-            )
-            selected_mode = art_mode if preferred else "fallback"
-            return f"https://image.tmdb.org/t/p/w780{best['file_path']}", selected_mode, "ok"
-
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(fetch, candidates))
-        if any(status == "unauthorized" for _, _, status in results):
-            return {"status": "error", "message": "TMDB rejected the API key."}
-
-        for (_, item, art_mode), (url, selected_mode, status) in zip(candidates, results):
-            if status == "error":
-                counts["request_errors"] += 1
-                continue
-            props = dict(item.custom_properties or {})
-            existing_marker = props.get(MARKER, {})
-            marker = dict(existing_marker) if isinstance(existing_marker, dict) else {}
-            marker["clean_cover_checked"] = str(item.tmdb_id)
-            marker["clean_cover_tmdb_id"] = str(item.tmdb_id)
-            marker["clean_cover_mode"] = art_mode
-            if url:
-                marker["clean_cover_url"] = url
-                marker["clean_cover_textless"] = selected_mode == "clean"
-                counts["prepared"] += 1
-                counts[selected_mode] += 1
-            else:
-                marker.pop("clean_cover_url", None)
-                counts["no_cover"] += 1
-            props[MARKER] = marker
-            item.custom_properties = props
-            item.save(update_fields=["custom_properties", "updated_at"])
-
-        counts["ready"] += counts["prepared"]
-        return {
-            "status": "ok",
-            "prepared": dict(counts),
-            "message": (
-                f"Prepared {counts['prepared']} covers: {counts['clean']} language-neutral, "
-                f"{counts['en']} English, and {counts['fallback']} fallbacks; "
-                f"{counts['ready']} are now ready, {counts['missing_tmdb']} lack TMDB IDs, "
-                f"and {counts['remaining']} remain for another run. Run Preview next."
-            ),
-        }
-
     def _apply(self, settings: dict[str, Any], logger: Any, dry_run: bool) -> dict[str, Any]:
-        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, Movie, Series, VODCategory, VODLogo
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, Movie, Series, VODCategory
 
         category_rules = compile_category_rules(settings.get("category_rules", "[]"))
         title_rules = compile_title_rules(settings.get("title_rules", "[]"))
@@ -1061,7 +868,6 @@ class Plugin:
         samples: list[dict[str, str]] = []
         relation_changes = []
         title_candidates: dict[tuple[str, int], tuple[Any, str, str]] = {}
-        art_item_modes: dict[str, dict[int, str]] = {"movie": {}, "series": {}}
 
         for content_type, relation_model, item_field in relation_specs:
             queryset = relation_model.objects.filter(**account_filter).select_related(
@@ -1075,13 +881,7 @@ class Plugin:
                     relation.category.name if relation.category else "Uncategorized"
                 )
                 source_category_id = marker.get("original_category_id") or relation.category_id
-                direct_target, art_mode = category_override_details(
-                    settings, content_type, source_category_id
-                )
-                if art_mode:
-                    current_mode = art_item_modes[content_type].get(item.pk)
-                    if current_mode is None or art_mode == "en":
-                        art_item_modes[content_type][item.pk] = art_mode
+                direct_target = category_override(settings, content_type, source_category_id)
                 target = direct_target or category_target(source_category, content_type, category_rules)
                 if target and (not relation.category or relation.category.name != target):
                     relation_changes.append((content_type, relation, source_category, target))
@@ -1111,19 +911,6 @@ class Plugin:
             title_changes.append((item, source_name, cleaned))
             counts["titles"] += 1
             self._sample(samples, "title", f"{source_name} -> {cleaned}")
-
-        cover_changes = []
-        for model, content_type in ((Movie, "movie"), (Series, "series")):
-            modes = art_item_modes[content_type]
-            for item in model.objects.filter(pk__in=modes).select_related("logo"):
-                url = self._cached_clean_cover(item, modes[item.pk])
-                if not url:
-                    counts["covers_unprepared"] += 1
-                    continue
-                if not item.logo_id or item.logo.url != url:
-                    cover_changes.append((item, item.logo_id, url))
-                    counts["covers"] += 1
-                    self._sample(samples, "clean cover", f"{item.name} -> TMDB artwork")
 
         if dry_run:
             return self._result(counts, samples, dry_run=True)
@@ -1165,22 +952,6 @@ class Plugin:
                 except IntegrityError:
                     counts["title_conflicts"] += 1
                     counts["titles"] -= 1
-
-            for item, original_logo_id, url in cover_changes:
-                logo, _ = VODLogo.objects.get_or_create(
-                    url=url,
-                    defaults={"name": f"tidyVOD clean cover - {item.name}"[:255]},
-                )
-                item.refresh_from_db(fields=["custom_properties", "logo"])
-                props = dict(item.custom_properties or {})
-                existing_marker = props.get(MARKER, {})
-                marker = dict(existing_marker) if isinstance(existing_marker, dict) else {}
-                marker.setdefault("original_logo_id", original_logo_id)
-                marker["clean_cover_managed"] = True
-                props[MARKER] = marker
-                item.logo = logo
-                item.custom_properties = props
-                item.save(update_fields=["logo", "custom_properties", "updated_at"])
 
         logger.info("tidyVOD applied: %s", dict(counts))
         return self._result(counts, samples, dry_run=False)
@@ -1278,11 +1049,6 @@ class Plugin:
         conflicts = counts["title_conflicts"]
         if conflicts:
             summary += f" ({conflicts} title conflicts skipped)"
-        if counts["covers"] or counts["covers_unprepared"]:
-            summary += (
-                f". Clean covers: {counts['covers']} replacements and "
-                f"{counts['covers_unprepared']} unprepared titles"
-            )
         return {
             "status": "ok",
             "dry_run": dry_run,
