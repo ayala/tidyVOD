@@ -8,6 +8,7 @@ from core import (
     compile_category_rules,
     compile_title_rules,
     parse_account_names,
+    selected_category_mappings,
 )
 
 
@@ -53,6 +54,22 @@ class RulesTests(unittest.TestCase):
 
     def test_obsolete_marker_without_a_name_is_ignored(self):
         self.assertIsNone(category_override({"category_override_movie_12": "[CLEAN]"}, "movie", 12))
+
+    def test_selected_category_mappings_only_returns_explicit_clean_names(self):
+        settings = {
+            "category_override_movie_12": " Netflix ",
+            "category_override_movie_13": "Netflix [EN]",
+            "category_override_series_22": "Drama",
+            "category_override_series_23": "",
+            "auto_apply": True,
+        }
+        self.assertEqual(
+            selected_category_mappings(settings),
+            {
+                "movie": {12: "Netflix", 13: "Netflix"},
+                "series": {22: "Drama"},
+            },
+        )
 
 if __name__ == "__main__":
     unittest.main()

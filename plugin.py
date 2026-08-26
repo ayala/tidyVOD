@@ -3,29 +3,34 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone as datetime_timezone
 from pathlib import Path
+import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
 import tempfile
+import threading
+import time
 from typing import Any
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, close_old_connections, transaction
 
 from .core import (
     ConfigurationError,
     safe_filename,
-    category_override,
     category_override,
     category_target,
     clean_title,
     compile_category_rules,
     compile_title_rules,
     parse_account_names,
+    selected_category_mappings,
 )
 
 
@@ -47,7 +52,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.6.6"
+    version = "0.7.0"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -121,15 +126,17 @@ class Plugin:
         },
         {
             "id": "auto_export",
-            "label": "Export after M3U refresh",
+            "label": "Export after synchronized changes",
             "type": "boolean",
             "default": False,
+            "help_text": "When synchronization moves new VOD items, refresh the stable M3U/XMLTV export too.",
         },
         {
-            "id": "auto_apply",
-            "label": "Apply automatically after M3U refresh",
+            "id": "sync_curated_categories",
+            "label": "Keep curated categories synchronized",
             "type": "boolean",
-            "default": False,
+            "default": True,
+            "help_text": "Every minute, move newly imported movies and series out of mapped provider categories and into your saved clean categories.",
         },
     ]
 
@@ -205,12 +212,52 @@ class Plugin:
             },
         },
         {
+            "id": "reconcile_now",
+            "label": "Synchronize new VOD now",
+            "description": "Move newly imported items that are still in provider categories you mapped.",
+            "button_label": "Synchronize now",
+            "button_color": "green",
+        },
+        {
+            "id": "sync_status",
+            "label": "Synchronization status",
+            "description": "Show when synchronization last ran and what it changed.",
+            "button_label": "Show status",
+            "button_color": "blue",
+        },
+        {
             "id": "on_m3u_refresh",
-            "label": "Auto-apply and export after M3U refresh",
-            "description": "Internal event action controlled by the auto-apply and export settings.",
+            "label": "Watch for VOD after M3U refresh",
+            "description": "Internal event notice; continuous synchronization waits for the separate VOD import.",
             "events": ["m3u_refresh"],
         },
     ]
+
+    RECONCILE_INTERVAL_SECONDS = 60
+    RECONCILE_COOLDOWN_SECONDS = 45
+
+    def __init__(self) -> None:
+        self._stop_event = threading.Event()
+        self._reconcile_thread: threading.Thread | None = None
+        self._reconcile_start_lock = threading.Lock()
+
+    def _ensure_reconciler_started(self) -> None:
+        with self._reconcile_start_lock:
+            if self._stop_event.is_set():
+                return
+            if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
+                return
+            self._reconcile_thread = threading.Thread(
+                target=self._reconcile_loop,
+                name="tidyvod-reconciler",
+                daemon=True,
+            )
+            self._reconcile_thread.start()
+
+    def stop(self, context: dict | None = None) -> None:
+        self._stop_event.set()
+        if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
+            self._reconcile_thread.join(timeout=5)
 
     @property
     def fields(self) -> list[dict[str, Any]]:
@@ -234,7 +281,7 @@ class Plugin:
         return (
             [base["category_editor_help"], base["account_names"]]
             + dynamic
-            + [base["portable_mapping_json"], base["auto_apply"]]
+            + [base["portable_mapping_json"], base["sync_curated_categories"]]
             + [base[field_id] for field_id in export_ids]
             + [base[field_id] for field_id in advanced_ids]
         )
@@ -300,9 +347,14 @@ class Plugin:
     def run(self, action: str, params: dict, context: dict) -> dict[str, Any]:
         settings = context.get("settings", {})
         logger = context.get("logger")
+        self._ensure_reconciler_started()
         try:
             if action == "on_m3u_refresh":
                 return self._on_m3u_refresh(settings, logger)
+            if action == "reconcile_now":
+                return self._reconcile_categories(settings, logger, source="manual", force=True)
+            if action == "sync_status":
+                return self._reconcile_status_result()
             if action == "preview_export":
                 return self._run_export(settings, logger, dry_run=True)
             if action == "export_playlist":
@@ -328,36 +380,263 @@ class Plugin:
             return {"status": "error", "message": str(exc)}
 
     def _on_m3u_refresh(self, settings: dict[str, Any], logger: Any) -> dict[str, Any]:
-        auto_apply = bool(settings.get("auto_apply", False))
-        auto_export = bool(settings.get("auto_export", False))
-
-        if not auto_apply and not auto_export:
-            return {"status": "ok", "message": "Automatic apply/export is disabled"}
-
-        results = []
-        messages = []
-        overall_status = "ok"
-        for action_name in ("apply", "export"):
-            if action_name == "apply" and auto_apply:
-                result = self._apply(settings, logger, dry_run=False)
-            elif action_name == "export" and auto_export:
-                result = self._run_export(settings, logger, dry_run=False)
-            else:
-                continue
-            results.append(result)
-            result_status = result.get("status")
-            if result_status == "error":
-                overall_status = "error"
-            messages.append(result.get("message", f"{action_name} completed"))
-        if auto_apply and auto_export:
-            message = "Auto-refresh completed: " + " | ".join(messages)
-        else:
-            message = messages[-1] if messages else ""
+        enabled = bool(settings.get("sync_curated_categories", True))
         return {
-            "status": overall_status,
-            "message": message,
-            "results": results,
+            "status": "ok",
+            "message": (
+                "tidyVOD will synchronize new VOD after the provider import finishes."
+                if enabled
+                else "Continuous curated-category synchronization is disabled."
+            ),
         }
+
+    def _reconcile_loop(self) -> None:
+        """Continuously catch VOD relations created after Dispatcharr's M3U event."""
+        logger = logging.getLogger("dispatcharr.plugins.tidyvod")
+        # Plugin discovery happens before its database row is always available.
+        if self._stop_event.wait(15):
+            return
+        while not self._stop_event.is_set():
+            try:
+                close_old_connections()
+                config = self._plugin_config(enabled_only=True)
+                if config is not None:
+                    settings = dict(config.settings or {})
+                    if bool(settings.get("sync_curated_categories", True)):
+                        self._reconcile_categories(
+                            settings, logger, source="automatic", force=False
+                        )
+            except Exception:
+                logger.exception("tidyVOD background synchronization failed")
+            finally:
+                close_old_connections()
+            if self._stop_event.wait(self.RECONCILE_INTERVAL_SECONDS):
+                return
+
+    @staticmethod
+    def _plugin_config(*, enabled_only: bool, for_update: bool = False) -> Any:
+        from apps.plugins.models import PluginConfig
+
+        # Upgrades from VOD Arranger retain the legacy key; new managed installs
+        # normally use tidyvod. Prefer whichever matching row is enabled.
+        queryset = PluginConfig.objects.select_for_update() if for_update else PluginConfig.objects
+        if enabled_only:
+            queryset = queryset.filter(enabled=True)
+        for lookup in (
+            {"key": MARKER},
+            {"key": "tidyvod"},
+            {"slug": "tidyvod"},
+            {"name": "tidyVOD"},
+        ):
+            config = queryset.filter(**lookup).first()
+            if config is not None:
+                return config
+        return None
+
+    @classmethod
+    def _reconcile_status_path(cls) -> str:
+        return os.path.join(cls._mapping_backup_dir(), "synchronization-status.json")
+
+    @classmethod
+    def _read_reconcile_status(cls) -> dict[str, Any]:
+        try:
+            with open(cls._reconcile_status_path(), "r", encoding="utf-8") as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    @classmethod
+    @contextmanager
+    def _reconcile_lock(cls):
+        backup_dir = cls._mapping_backup_dir()
+        os.makedirs(backup_dir, exist_ok=True)
+        lock_path = os.path.join(backup_dir, "synchronization.lock")
+        with open(lock_path, "a+", encoding="utf-8") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _reconcile_categories(
+        self,
+        settings: dict[str, Any],
+        logger: Any,
+        *,
+        source: str,
+        force: bool,
+    ) -> dict[str, Any]:
+        mappings = selected_category_mappings(settings)
+        mapping_count = sum(len(group) for group in mappings.values())
+        if not mapping_count:
+            return {
+                "status": "ok",
+                "changes": {"categories": 0},
+                "message": "No clean category names are saved yet; nothing to synchronize.",
+            }
+
+        logger = logger or logging.getLogger("dispatcharr.plugins.tidyvod")
+        with self._reconcile_lock() as acquired:
+            if not acquired:
+                return {
+                    "status": "ok",
+                    "message": "A tidyVOD synchronization is already running.",
+                }
+
+            previous = self._read_reconcile_status()
+            elapsed = time.time() - float(previous.get("completed_epoch", 0) or 0)
+            if not force and elapsed < self.RECONCILE_COOLDOWN_SECONDS:
+                return {
+                    "status": "ok",
+                    "message": "Curated categories were synchronized recently.",
+                }
+
+            started_at = datetime.now(datetime_timezone.utc).isoformat()
+            self._atomic_json_write(self._reconcile_status_path(), {
+                "status": "running",
+                "source": source,
+                "started_at": started_at,
+                "mapped_categories": mapping_count,
+            })
+            try:
+                result = self._perform_category_reconciliation(settings, mappings, logger)
+                completed_at = datetime.now(datetime_timezone.utc).isoformat()
+                status = {
+                    "status": "ok",
+                    "source": source,
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                    "completed_epoch": time.time(),
+                    "mapped_categories": mapping_count,
+                    "changes": result.get("changes", {}),
+                }
+                self._atomic_json_write(self._reconcile_status_path(), status)
+                result["last_run"] = completed_at
+                return result
+            except Exception as exc:
+                self._atomic_json_write(self._reconcile_status_path(), {
+                    "status": "error",
+                    "source": source,
+                    "started_at": started_at,
+                    "completed_at": datetime.now(datetime_timezone.utc).isoformat(),
+                    "completed_epoch": time.time(),
+                    "mapped_categories": mapping_count,
+                    "error": str(exc),
+                })
+                raise
+
+    def _perform_category_reconciliation(
+        self,
+        settings: dict[str, Any],
+        mappings: dict[str, dict[int, str]],
+        logger: Any,
+    ) -> dict[str, Any]:
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, VODCategory
+
+        try:
+            self._backup_mappings(settings, reason="automatic_synchronization")
+        except Exception as exc:
+            logger.warning("Could not back up tidyVOD mappings before synchronization: %s", exc)
+
+        account_filter = self._account_filter(settings)
+        relation_specs = (
+            ("movie", M3UMovieRelation),
+            ("series", M3USeriesRelation),
+        )
+        counts = Counter()
+        samples: list[dict[str, str]] = []
+
+        with transaction.atomic():
+            category_cache: dict[tuple[str, str], Any] = {}
+            for content_type, relation_model in relation_specs:
+                content_mappings = mappings[content_type]
+                if not content_mappings:
+                    continue
+                relations = relation_model.objects.filter(
+                    category_id__in=content_mappings.keys(),
+                    **account_filter,
+                ).select_related("category")
+                changed = []
+                for relation in relations.iterator(chunk_size=1000):
+                    props = dict(relation.custom_properties or {})
+                    marker = dict(props.get(MARKER, {}))
+                    source_category_id = marker.get("original_category_id") or relation.category_id
+                    target_name = content_mappings.get(source_category_id)
+                    if not target_name or (
+                        relation.category is not None and relation.category.name == target_name
+                    ):
+                        continue
+                    cache_key = (content_type, target_name)
+                    target_category = category_cache.get(cache_key)
+                    if target_category is None:
+                        target_category, _ = VODCategory.objects.get_or_create(
+                            name=target_name,
+                            category_type=content_type,
+                        )
+                        category_cache[cache_key] = target_category
+                    source_name = marker.get("original_category_name") or (
+                        relation.category.name if relation.category else "Uncategorized"
+                    )
+                    marker.setdefault("original_category_id", relation.category_id)
+                    marker.setdefault("original_category_name", source_name)
+                    props[MARKER] = marker
+                    relation.category = target_category
+                    relation.custom_properties = props
+                    changed.append(relation)
+                    counts["categories"] += 1
+                    counts[content_type] += 1
+                    self._sample(samples, "category", f"{source_name} -> {target_name}")
+                if changed:
+                    relation_model.objects.bulk_update(
+                        changed,
+                        ["category", "custom_properties"],
+                        batch_size=1000,
+                    )
+
+        export_result = None
+        if counts["categories"] and bool(settings.get("auto_export", False)):
+            export_result = self._run_export(settings, logger, dry_run=False)
+        logger.info("tidyVOD synchronized newly imported VOD: %s", dict(counts))
+        result = {
+            "status": "ok",
+            "changes": dict(counts),
+            "samples": samples,
+            "message": (
+                f"Synchronized {counts['categories']} newly imported category assignments "
+                f"({counts['movie']} movies, {counts['series']} series)."
+            ),
+        }
+        if export_result is not None:
+            result["export"] = export_result
+        return result
+
+    def _reconcile_status_result(self) -> dict[str, Any]:
+        status = self._read_reconcile_status()
+        if not status:
+            return {
+                "status": "ok",
+                "message": "Continuous synchronization has not run yet.",
+            }
+        if status.get("status") == "running":
+            message = f"Synchronization is running (started {status.get('started_at', 'recently')})."
+        elif status.get("status") == "error":
+            message = (
+                f"Last synchronization failed at {status.get('completed_at', 'an unknown time')}: "
+                f"{status.get('error', 'unknown error')}"
+            )
+        else:
+            changes = status.get("changes") or {}
+            message = (
+                f"Last synchronized {status.get('completed_at', 'recently')}: "
+                f"{changes.get('categories', 0)} assignments moved "
+                f"({changes.get('movie', 0)} movies, {changes.get('series', 0)} series)."
+            )
+        return {"status": "ok", "synchronization": status, "message": message}
 
     def _account_filter(self, settings: dict[str, Any]) -> dict[str, Any]:
         from apps.m3u.models import M3UAccount
@@ -746,12 +1025,12 @@ class Plugin:
         return payload
 
     def _backup_mappings_result(self, settings: dict[str, Any], reason: str) -> dict[str, Any]:
-        from apps.plugins.models import PluginConfig
-
         payload = self._backup_mappings(settings, reason)
         count = len(payload.get("mappings", []))
         with transaction.atomic():
-            config = PluginConfig.objects.select_for_update().get(key=MARKER)
+            config = self._plugin_config(enabled_only=False, for_update=True)
+            if config is None:
+                raise ConfigurationError("tidyVOD plugin settings could not be found.")
             updated_settings = dict(config.settings or {})
             updated_settings["portable_mapping_json"] = json.dumps(payload, indent=2, sort_keys=True)
             config.settings = updated_settings
@@ -794,7 +1073,6 @@ class Plugin:
     def _restore_mapping_payload(
         self, settings: dict[str, Any], payload: Any, logger: Any, source: str,
     ) -> dict[str, Any]:
-        from apps.plugins.models import PluginConfig
         from apps.vod.models import VODCategory
 
         if not isinstance(payload, dict) or payload.get("format") != 1:
@@ -828,7 +1106,9 @@ class Plugin:
             restored[f"category_override_{content_type}_{category.pk}"] = clean_name
 
         with transaction.atomic():
-            config = PluginConfig.objects.select_for_update().get(key=MARKER)
+            config = self._plugin_config(enabled_only=False, for_update=True)
+            if config is None:
+                raise ConfigurationError("tidyVOD plugin settings could not be found.")
             updated_settings = {
                 key: value
                 for key, value in (config.settings or {}).items()

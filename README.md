@@ -9,7 +9,7 @@ tidyVOD can also:
 - clean movie and series titles with optional advanced regex replacements;
 - automatically back up clean category-name mappings and restore them after mistakes or provider rebuilds;
 - preview changes before writing them;
-- reapply mappings automatically after an M3U refresh;
+- continuously place newly imported VOD into your saved curated categories;
 - restore category and title values it previously changed;
 - export curated categories as `.m3u` (and optional `.xml` XMLTV stub) for downstream tools like m3u4u in one click.
 
@@ -25,7 +25,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.6.6/tidyvod-v0.6.6.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.7.0/tidyvod-v0.7.0.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -58,9 +58,9 @@ Matching clean names combine automatically. Different clean names create differe
 3. Run **Back up mappings** and keep a local JSON copy.
 4. Run **Preview**.
 5. Run **Apply**.
-6. Enable automatic application only after confirming the result.
+6. Leave **Keep curated categories synchronized** enabled so later provider additions follow the same mappings.
 
-tidyVOD stores restore markers in Dispatcharr's existing `custom_properties` JSON. Provider refreshes may restore upstream categories, which is why the optional M3U-refresh action reapplies the mappings.
+tidyVOD stores restore markers in Dispatcharr's existing `custom_properties` JSON. Dispatcharr starts its VOD import after announcing an M3U refresh, so tidyVOD checks once per minute for newly imported relations that are still in a mapped provider category. It does not repeatedly scan or rewrite items already in their clean category. Use **Synchronize now** for an immediate check and **Synchronization status** to see the last result. A file lock under `/data/plugins/.tidyvod_backups` prevents duplicate work when Dispatcharr has multiple workers.
 
 ## Immutable releases
 

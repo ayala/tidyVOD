@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 
 VALID_CONTENT_TYPES = {"movie", "series", "both"}
+CATEGORY_OVERRIDE_PATTERN = re.compile(r"^category_override_(movie|series)_(\d+)$")
 
 
 class ConfigurationError(ValueError):
@@ -123,6 +124,22 @@ def category_override(
     if len(value) > 255:
         raise ConfigurationError("a category clean name exceeds 255 characters")
     return value or None
+
+
+def selected_category_mappings(
+    settings: dict[str, Any],
+) -> dict[str, dict[int, str]]:
+    """Return only explicit category-editor mappings, grouped by content type."""
+    mappings: dict[str, dict[int, str]] = {"movie": {}, "series": {}}
+    for key in settings:
+        match = CATEGORY_OVERRIDE_PATTERN.fullmatch(str(key))
+        if not match:
+            continue
+        content_type, raw_category_id = match.groups()
+        target = category_override(settings, content_type, raw_category_id)
+        if target:
+            mappings[content_type][int(raw_category_id)] = target
+    return mappings
 
 
 def clean_title(name: str, content_type: str, rules: Iterable[TitleRule]) -> str:
