@@ -196,6 +196,9 @@ class ReconciliationTests(unittest.TestCase):
                 "category_override_series_22",
             ],
         )
+        spacer = next(field for field in fields if field["id"] == "movie_series_section_gap")
+        self.assertEqual(spacer["value"], "\u200c")
+        self.assertTrue(spacer["value"])
 
 
 if __name__ == "__main__":
