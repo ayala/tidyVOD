@@ -1,15 +1,19 @@
-VERSION := 0.7.2
+VERSION := 0.7.3
+PYTHON ?= python3
 RELEASE_DIR := releases/v$(VERSION)
 PACKAGE := $(RELEASE_DIR)/tidyvod-v$(VERSION).zip
 CHECKSUM := $(RELEASE_DIR)/SHA256SUMS
-PLUGIN_FILES := __init__.py core.py plugin.py plugin.json logo.png logo-monochrome.png logo-unbranded.png
+PLUGIN_FILES := __init__.py core.py plugin.py plugin.json logo.png
 
-.PHONY: test package verify clean
+.PHONY: test test-orm package verify clean
 
 test:
-	python3 -m unittest discover -s tests -v
+	$(PYTHON) -m unittest discover -s tests -v
 
-package: test
+test-orm:
+	$(PYTHON) tests/orm_reconciliation.py
+
+package: test test-orm
 	@test ! -e $(RELEASE_DIR) || (echo "ERROR: $(RELEASE_DIR) already exists; releases are immutable." && exit 1)
 	mkdir -p $(RELEASE_DIR)
 	zip -q -r $(PACKAGE) $(PLUGIN_FILES) README.md LICENSE

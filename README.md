@@ -60,7 +60,25 @@ Matching clean names combine automatically. Different clean names create differe
 5. Run **Apply**.
 6. Leave **Keep curated categories synchronized** enabled so later provider additions follow the same mappings.
 
-tidyVOD stores restore markers in Dispatcharr's existing `custom_properties` JSON. Dispatcharr starts its VOD import after announcing an M3U refresh, so tidyVOD checks once per minute for newly imported relations that are still in a mapped provider category. It does not repeatedly scan or rewrite items already in their clean category. Use **Synchronize now** for an immediate check and **Synchronization status** to see the last result. A file lock under `/data/plugins/.tidyvod_backups` prevents duplicate work when Dispatcharr has multiple workers.
+**Apply runs immediately. You do not need to press Run afterward.** Keep tidyVOD and **Keep curated categories synchronized** enabled. The watcher starts when Dispatcharr loads the enabled plugin, waits 15 seconds for startup, and checks every minute. The M3U event button is an internal notice, not a start-watching button.
+
+Automatic repair covers new imports, provider-reset assignments, missing categories, and previously curated items whose saved clean name changed. It uses the original source markers in Dispatcharr's `custom_properties` JSON. If a provider recreates a source category with a different ID, exact source names retained in mapping backups allow recovery. Blank/removed mappings are never restored automatically, ambiguous names are not guessed, and account/movie/series scope is preserved. If both the source identity and its backup/restore markers are gone, manual mapping or backup restoration may still be required.
+
+The database query selects assignments that differ from their targets; already-correct items are not loaded or rewritten. Repairs are written in batches, and a shared file lock prevents overlapping synchronization, Apply, and Restore runs. A refresh can briefly show provider categories until the next check; this is repair after import, not interception of the provider import itself. Automatic synchronization applies category-editor mappings, not advanced title-cleanup rules.
+
+Use **Synchronize now** for an immediate category repair. **Show status** reports the last check and warns if there is no recent activity for more than three minutes, or reports a failure, disabled synchronization, or no saved mappings. Status is read on demand, not a push notification. If it stays stale, reload tidyVOD or restart Dispatcharr. Disable automatic synchronization before intentionally using **Restore** to undo category changes.
+
+### 0.7.3 reliability update
+
+- Start the watcher on plugin load, without requiring an action click after restart.
+- Retire replaced watcher instances and retry transient database failures.
+- Repair changed/missing assignments and recover recreated source IDs by exact backed-up names.
+- Preserve source names in backups when their original database rows disappear.
+- Show explicit stale/disabled/error status; protect Apply/Restore with the same repair lock.
+
+Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
+
+Developer verification: install Django 5.2 in a separate test environment, then run `make test test-orm` (or `make package`) with `PYTHON` pointing to that environment. The ORM tests use an isolated in-memory SQLite database and temporary backup directory, never live Dispatcharr data.
 
 ## Immutable releases
 

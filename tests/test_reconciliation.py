@@ -4,7 +4,22 @@ from pathlib import Path
 import sys
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from datetime import datetime, timezone, timedelta
+
+
+class FakeQ:
+    def __init__(self, **kwargs):
+        pass
+
+    def __or__(self, other):
+        return self
+
+    def __and__(self, other):
+        return self
+
+    def __invert__(self):
+        return self
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +34,7 @@ def load_plugin_module():
     django_db.transaction = types.SimpleNamespace(atomic=contextlib.nullcontext)
     django_db_models = types.ModuleType("django.db.models")
     django_db_models.Count = lambda *args, **kwargs: (args, kwargs)
+    django_db_models.Q = FakeQ
     django.db = django_db
     sys.modules.setdefault("django", django)
     sys.modules.setdefault("django.db", django_db)
@@ -52,12 +68,9 @@ class FakeRelationManager:
         self.relations = relations
         self.updated = []
 
-    def filter(self, **filters):
-        category_ids = set(filters["category_id__in"])
-        return FakeQuerySet([
-            relation for relation in self.relations
-            if relation.category_id in category_ids
-        ])
+    def filter(self, *args, **filters):
+        # SQL candidate selection is exercised by orm_reconciliation.py.
+        return FakeQuerySet(self.relations)
 
     def bulk_update(self, relations, fields, batch_size=None):
         self.updated.extend(relations)
@@ -142,6 +155,8 @@ class ReconciliationTests(unittest.TestCase):
 
         plugin = self.module.Plugin.__new__(self.module.Plugin)
         plugin._backup_mappings = lambda *args, **kwargs: None
+        plugin._mapping_entries = lambda settings: []
+        plugin._resolved_category_mappings = lambda settings, mappings, **kwargs: mappings
         plugin._account_filter = lambda settings: {}
         result = plugin._perform_category_reconciliation(
             {"category_override_movie_12": "Netflix"},
@@ -156,6 +171,72 @@ class ReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(len(movie_manager.updated), 1)
         self.assertEqual(result["changes"]["categories"], 1)
+
+    def test_constructor_starts_watcher_without_action(self):
+        with patch.object(self.module.Plugin, "_ensure_reconciler_started") as start:
+            plugin = self.module.Plugin()
+        start.assert_called_once_with()
+        self.assertFalse(plugin._stop_event.is_set())
+
+    def test_reload_retires_old_thread_and_start_is_idempotent(self):
+        with patch.object(self.module.threading, "Thread") as thread_cls, patch.object(self.module.threading, "enumerate") as threads:
+            previous = Mock()
+            previous._tidyvod_path = self.module.__file__
+            threads.return_value = [previous]
+            plugin = self.module.Plugin()
+            previous._tidyvod_stop_event.set.assert_called_once()
+            thread_cls.return_value.is_alive.return_value = True
+            plugin._ensure_reconciler_started()
+            thread_cls.return_value.start.assert_called_once()
+            plugin.stop()
+            self.assertTrue(plugin._stop_event.is_set())
+
+    def test_loop_retries_after_database_error(self):
+        plugin = self.module.Plugin.__new__(self.module.Plugin)
+        plugin._stop_event = Mock()
+        plugin._stop_event.wait.side_effect = [False, False, True]
+        plugin._stop_event.is_set.return_value = False
+        config = types.SimpleNamespace(version=plugin.version, settings={"sync_curated_categories": True})
+        plugin._plugin_config = Mock(side_effect=[RuntimeError("database starting"), config])
+        plugin._reconcile_categories = Mock()
+        with self.assertLogs("dispatcharr.plugins.tidyvod", level="ERROR"):
+            plugin._reconcile_loop()
+        plugin._reconcile_categories.assert_called_once()
+
+    def test_loop_does_not_write_when_disabled_or_old_version(self):
+        for version, enabled in [(self.module.Plugin.version, False), ("99.0.0", True)]:
+            with self.subTest(version=version, enabled=enabled):
+                plugin = self.module.Plugin.__new__(self.module.Plugin)
+                plugin._stop_event = Mock()
+                plugin._stop_event.wait.side_effect = [False, True]
+                plugin._stop_event.is_set.return_value = False
+                plugin._plugin_config = Mock(return_value=types.SimpleNamespace(
+                    version=version, settings={"sync_curated_categories": enabled}))
+                plugin._reconcile_categories = Mock()
+                plugin._reconcile_loop()
+                plugin._reconcile_categories.assert_not_called()
+
+    def test_status_distinguishes_stale_disabled_idle_error_and_healthy(self):
+        plugin = self.module.Plugin.__new__(self.module.Plugin)
+        config = types.SimpleNamespace(enabled=True, settings={"category_override_movie_12": "Netflix"})
+        plugin._plugin_config = Mock(return_value=config)
+        now = datetime.now(timezone.utc)
+        plugin._read_reconcile_status = Mock(return_value={
+            "status": "ok", "completed_at": (now - timedelta(minutes=10)).isoformat()})
+        self.assertEqual(plugin._reconcile_status_result()["health"], "stale")
+        plugin._read_reconcile_status.return_value = {"status": "running", "started_at": (now - timedelta(minutes=10)).isoformat()}
+        self.assertEqual(plugin._reconcile_status_result()["health"], "stale")
+        plugin._read_reconcile_status.return_value = {"status": "error", "error": "database offline", "completed_at": now.isoformat()}
+        result = plugin._reconcile_status_result()
+        self.assertEqual(result["health"], "error")
+        self.assertIn("database offline", result["message"])
+        plugin._read_reconcile_status.return_value = {"status": "ok", "completed_at": now.isoformat()}
+        self.assertEqual(plugin._reconcile_status_result()["health"], "ok")
+        config.enabled = False
+        self.assertEqual(plugin._reconcile_status_result()["health"], "disabled")
+        config.enabled = True
+        config.settings = {}
+        self.assertEqual(plugin._reconcile_status_result()["health"], "idle")
 
     def test_category_editor_has_a_gap_between_movies_and_series(self):
         categories = [

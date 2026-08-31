@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from django.db import IntegrityError, close_old_connections, transaction
+from django.db.models import Q
 
 from .core import (
     ConfigurationError,
@@ -52,7 +53,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.7.2"
+    version = "0.7.3"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -136,7 +137,7 @@ class Plugin:
             "label": "Keep curated categories synchronized",
             "type": "boolean",
             "default": True,
-            "help_text": "Every minute, move newly imported movies and series out of mapped provider categories and into your saved clean categories.",
+            "help_text": "Automatically starts with Dispatcharr. Every minute, repair mapped category assignments for new and previously curated movies and series.",
         },
     ]
 
@@ -213,15 +214,15 @@ class Plugin:
         },
         {
             "id": "reconcile_now",
-            "label": "Synchronize new VOD now",
-            "description": "Move newly imported items that are still in provider categories you mapped.",
+            "label": "Repair curated categories now",
+            "description": "Check new and previously curated VOD and repair category assignments using your saved mappings.",
             "button_label": "Synchronize now",
             "button_color": "green",
         },
         {
             "id": "sync_status",
             "label": "Synchronization status",
-            "description": "Show when synchronization last ran and what it changed.",
+            "description": "Check watcher health, including disabled, stale, or failed synchronization, and the last result.",
             "button_label": "Show status",
             "button_color": "blue",
         },
@@ -235,11 +236,15 @@ class Plugin:
 
     RECONCILE_INTERVAL_SECONDS = 60
     RECONCILE_COOLDOWN_SECONDS = 45
+    RECONCILE_STALE_SECONDS = 180
 
     def __init__(self) -> None:
         self._stop_event = threading.Event()
         self._reconcile_thread: threading.Thread | None = None
         self._reconcile_start_lock = threading.Lock()
+        # Dispatcharr constructs enabled plugins at startup; no action click is
+        # required. The thread delays ORM work until discovery has completed.
+        self._ensure_reconciler_started()
 
     def _ensure_reconciler_started(self) -> None:
         with self._reconcile_start_lock:
@@ -247,11 +252,18 @@ class Plugin:
                 return
             if self._reconcile_thread is not None and self._reconcile_thread.is_alive():
                 return
+            # Discovery can replace an instance without calling stop(). Retire
+            # previous instances in this process; the file lock covers workers.
+            for thread in threading.enumerate():
+                if getattr(thread, "_tidyvod_path", None) == __file__:
+                    thread._tidyvod_stop_event.set()
             self._reconcile_thread = threading.Thread(
                 target=self._reconcile_loop,
                 name="tidyvod-reconciler",
                 daemon=True,
             )
+            self._reconcile_thread._tidyvod_path = __file__
+            self._reconcile_thread._tidyvod_stop_event = self._stop_event
             self._reconcile_thread.start()
 
     def stop(self, context: dict | None = None) -> None:
@@ -378,9 +390,15 @@ class Plugin:
             if action == "import_mappings":
                 return self._import_mappings(settings, logger)
             if action == "apply":
-                return self._apply(settings, logger, dry_run=False)
+                with self._reconcile_lock() as acquired:
+                    if not acquired:
+                        return {"status": "error", "message": "Synchronization is running. Please retry Apply shortly."}
+                    return self._apply(settings, logger, dry_run=False)
             if action == "restore":
-                return self._restore(settings, logger)
+                with self._reconcile_lock() as acquired:
+                    if not acquired:
+                        return {"status": "error", "message": "Synchronization is running. Please retry Restore shortly."}
+                    return self._restore(settings, logger)
             return {"status": "error", "message": f"Unknown action: {action}"}
         except ConfigurationError as exc:
             return {"status": "error", "message": str(exc)}
@@ -411,6 +429,10 @@ class Plugin:
                 close_old_connections()
                 config = self._plugin_config(enabled_only=True)
                 if config is not None:
+                    installed = tuple(int(part) for part in re.findall(r"\d+", config.version or ""))
+                    running = tuple(int(part) for part in self.version.split("."))
+                    if installed > running:
+                        return  # Retired code must not keep writing after an upgrade.
                     settings = dict(config.settings or {})
                     if bool(settings.get("sync_curated_categories", True)):
                         self._reconcile_categories(
@@ -548,6 +570,11 @@ class Plugin:
     ) -> dict[str, Any]:
         from apps.vod.models import M3UMovieRelation, M3USeriesRelation, VODCategory
 
+        # Exact-name recovery is limited to currently selected mappings. Never
+        # resurrect a removed/blank mapping from an old backup.
+        entries = self._mapping_entries(settings)
+        name_targets = self._category_name_targets(entries, mappings)
+        mappings = self._resolved_category_mappings(settings, mappings, entries=entries)
         try:
             self._backup_mappings(settings, reason="automatic_synchronization")
         except Exception as exc:
@@ -558,7 +585,7 @@ class Plugin:
             ("movie", M3UMovieRelation),
             ("series", M3USeriesRelation),
         )
-        counts = Counter()
+        counts = Counter(categories=0, movie=0, series=0)
         samples: list[dict[str, str]] = []
 
         with transaction.atomic():
@@ -567,16 +594,34 @@ class Plugin:
                 content_mappings = mappings[content_type]
                 if not content_mappings:
                     continue
+                # Only fetch assignments that differ from their target. Include
+                # restore markers so moved/null categories and renamed targets
+                # recover too, without loading every already-correct VOD row.
+                by_target: dict[str, list[int]] = defaultdict(list)
+                for source_id, target in content_mappings.items():
+                    by_target[target].append(source_id)
+                candidates = Q(pk__in=[])
+                marker_key = f"custom_properties__{MARKER}__original_category_id"
+                for target, source_ids in by_target.items():
+                    source_names = [name for name, value in name_targets[content_type].items() if value == target]
+                    candidates |= (
+                        Q(category_id__in=source_ids)
+                        | Q(**{f"{marker_key}__in": source_ids})
+                        | Q(**{f"custom_properties__{MARKER}__original_category_name__in": source_names})
+                    ) & ~Q(category__name=target)
                 relations = relation_model.objects.filter(
-                    category_id__in=content_mappings.keys(),
-                    **account_filter,
+                    candidates, **account_filter,
                 ).select_related("category")
                 changed = []
                 for relation in relations.iterator(chunk_size=1000):
                     props = dict(relation.custom_properties or {})
                     marker = dict(props.get(MARKER, {}))
                     source_category_id = marker.get("original_category_id") or relation.category_id
-                    target_name = content_mappings.get(source_category_id)
+                    target_name = (
+                        content_mappings.get(source_category_id)
+                        or name_targets[content_type].get(marker.get("original_category_name"))
+                        or content_mappings.get(relation.category_id)
+                    )
                     if not target_name or (
                         relation.category is not None and relation.category.name == target_name
                     ):
@@ -592,7 +637,7 @@ class Plugin:
                     source_name = marker.get("original_category_name") or (
                         relation.category.name if relation.category else "Uncategorized"
                     )
-                    marker.setdefault("original_category_id", relation.category_id)
+                    marker.setdefault("original_category_id", source_category_id)
                     marker.setdefault("original_category_name", source_name)
                     props[MARKER] = marker
                     relation.category = target_category
@@ -601,6 +646,11 @@ class Plugin:
                     counts["categories"] += 1
                     counts[content_type] += 1
                     self._sample(samples, "category", f"{source_name} -> {target_name}")
+                    if len(changed) >= 1000:
+                        relation_model.objects.bulk_update(
+                            changed, ["category", "custom_properties"], batch_size=1000,
+                        )
+                        changed = []
                 if changed:
                     relation_model.objects.bulk_update(
                         changed,
@@ -617,7 +667,7 @@ class Plugin:
             "changes": dict(counts),
             "samples": samples,
             "message": (
-                f"Synchronized {counts['categories']} newly imported category assignments "
+                f"Repaired {counts['categories']} category assignments "
                 f"({counts['movie']} movies, {counts['series']} series)."
             ),
         }
@@ -625,13 +675,72 @@ class Plugin:
             result["export"] = export_result
         return result
 
+    @staticmethod
+    def _category_name_targets(entries, mappings):
+        grouped = {kind: defaultdict(set) for kind in mappings}
+        for entry in entries:
+            kind = entry["content_type"]
+            target = mappings[kind].get(entry["category_id"])
+            if target and entry.get("provider_name"):
+                grouped[kind][entry["provider_name"]].add(target)
+        return {kind: {name: next(iter(targets)) for name, targets in names.items() if len(targets) == 1}
+                for kind, names in grouped.items()}
+
+    def _resolved_category_mappings(self, settings, mappings, *, entries=None):
+        """Keep old marker IDs and add exact-name aliases for recreated sources."""
+        from apps.vod.models import VODCategory
+
+        resolved = {kind: dict(values) for kind, values in mappings.items()}
+        entries = self._mapping_entries(settings) if entries is None else entries
+        for kind in resolved:
+            names = {entry["provider_name"] for entry in entries
+                     if entry["content_type"] == kind and entry.get("provider_name")}
+            if not names:
+                continue
+            categories = VODCategory.objects.filter(category_type=kind, name__in=names)
+            by_name = defaultdict(list)
+            for category in categories:
+                by_name[category.name].append(category.pk)
+            targets_by_name = defaultdict(set)
+            for entry in entries:
+                if entry["content_type"] == kind:
+                    target = mappings[kind].get(entry["category_id"])
+                    if target:
+                        targets_by_name[entry.get("provider_name")].add(target)
+            for entry in entries:
+                if entry["content_type"] != kind:
+                    continue
+                target = mappings[kind].get(entry["category_id"])
+                matches = by_name.get(entry.get("provider_name"), [])
+                if target and len(matches) == 1 and len(targets_by_name[entry.get("provider_name")]) == 1:
+                    # An explicit mapping for the current ID always wins.
+                    resolved[kind].setdefault(matches[0], target)
+        return resolved
+
     def _reconcile_status_result(self) -> dict[str, Any]:
         status = self._read_reconcile_status()
+        config = self._plugin_config(enabled_only=False)
+        if config is None or not config.enabled or not bool((config.settings or {}).get("sync_curated_categories", True)):
+            return {"status": "ok", "health": "disabled", "synchronization": status,
+                    "message": "Automatic synchronization is disabled. Enable tidyVOD and Keep curated categories synchronized to protect your categories."}
+        if not any(selected_category_mappings(config.settings or {}).values()):
+            return {"status": "ok", "health": "idle", "synchronization": status,
+                    "message": "No category mappings are saved; nothing to synchronize."}
         if not status:
             return {
                 "status": "ok",
-                "message": "Continuous synchronization has not run yet.",
+                "health": "waiting",
+                "message": "WARNING: Automatic synchronization has not reported a check yet. Wait one minute after enabling; if unchanged, reload the plugin or restart Dispatcharr.",
             }
+        timestamp = status.get("completed_at") or status.get("started_at")
+        try:
+            checked_at = datetime.fromisoformat(timestamp).timestamp()
+            age = time.time() - checked_at
+        except (ValueError, TypeError):
+            age = float("inf")
+        if age > self.RECONCILE_STALE_SECONDS:
+            return {"status": "ok", "health": "stale", "synchronization": status,
+                    "message": f"WARNING: No completed/recent synchronization check for over 3 minutes (last activity: {timestamp}). A check may be stalled or the watcher stopped. Reload tidyVOD or restart Dispatcharr. Last error: {status.get('error') or 'none recorded'}."}
         if status.get("status") == "running":
             message = f"Synchronization is running (started {status.get('started_at', 'recently')})."
         elif status.get("status") == "error":
@@ -646,7 +755,7 @@ class Plugin:
                 f"{changes.get('categories', 0)} assignments moved "
                 f"({changes.get('movie', 0)} movies, {changes.get('series', 0)} series)."
             )
-        return {"status": "ok", "synchronization": status, "message": message}
+        return {"status": "ok", "health": status.get("status", "unknown"), "synchronization": status, "message": message}
 
     def _account_filter(self, settings: dict[str, Any]) -> dict[str, Any]:
         from apps.m3u.models import M3UAccount
@@ -937,8 +1046,8 @@ class Plugin:
                 return legacy_dir
         return backup_dir
 
-    @staticmethod
-    def _mapping_entries(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    @classmethod
+    def _mapping_entries(cls, settings: dict[str, Any]) -> list[dict[str, Any]]:
         from apps.vod.models import VODCategory
 
         selected = []
@@ -956,13 +1065,22 @@ class Plugin:
             category.pk: category
             for category in VODCategory.objects.filter(pk__in=category_ids).only("pk", "name", "category_type")
         }
+        # Preserve the source identity if a refresh deleted the original row.
+        # Otherwise the next automatic backup would erase our recovery key.
+        try:
+            with open(os.path.join(cls._mapping_backup_dir(), "latest.json"), encoding="utf-8") as handle:
+                previous = json.load(handle).get("mappings", [])
+            previous_names = {(entry["content_type"], entry["category_id"]): entry.get("provider_name")
+                              for entry in previous}
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            previous_names = {}
         entries = []
         for content_type, category_id, clean_name in selected:
             category = categories.get(category_id)
             entries.append({
                 "content_type": content_type,
                 "category_id": category_id,
-                "provider_name": category.name if category else None,
+                "provider_name": category.name if category else previous_names.get((content_type, category_id)),
                 "clean_name": clean_name,
             })
         return sorted(

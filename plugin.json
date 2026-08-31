@@ -1,6 +1,6 @@
 {
   "name": "tidyVOD",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
   "author": "ayala",
   "license": "MIT",
@@ -18,7 +18,7 @@
     {"id":"filename_prefix","label":"Filename prefix","type":"string","default":"tidym3u-playlist","help_text":"Prefix for playlist/XMLTV output files."},
     {"id":"emit_xmltv","label":"Also write XMLTV stub","type":"boolean","default":true},
     {"id":"auto_export","label":"Export after synchronized changes","type":"boolean","default":false,"help_text":"When synchronization moves new VOD items, refresh the stable M3U/XMLTV export too."},
-    {"id":"sync_curated_categories","label":"Keep curated categories synchronized","type":"boolean","default":true,"help_text":"Every minute, move newly imported movies and series out of mapped provider categories and into your saved clean categories."}
+    {"id":"sync_curated_categories","label":"Keep curated categories synchronized","type":"boolean","default":true,"help_text":"Automatically starts with Dispatcharr. Every minute, repair mapped category assignments for new and previously curated movies and series."}
   ],
   "actions": [
     {"id":"backup_mappings","label":"Back up category names","description":"Save a durable snapshot of every clean name you entered.","button_label":"Back up mappings","button_color":"blue"},
@@ -29,8 +29,8 @@
     {"id":"restore","label":"Restore plugin changes","description":"Restore category and title values saved by this plugin.","button_label":"Restore","button_color":"red","confirm":{"title":"Restore VOD values?","message":"This only restores values tracked by tidyVOD and earlier compatible builds."}},
     {"id":"preview_export","label":"Preview export","description":"Compute counts for the current settings without writing files.","button_label":"Preview export","button_color":"blue"},
     {"id":"export_playlist","label":"Export playlist","description":"Write M3U (+ optional XMLTV) files to disk.","button_label":"Export","button_color":"green","confirm":{"title":"Export curated playlist?","message":"This writes/overwrites the stable output files and creates a timestamped snapshot."}},
-    {"id":"reconcile_now","label":"Synchronize new VOD now","description":"Move newly imported items that are still in provider categories you mapped.","button_label":"Synchronize now","button_color":"green"},
-    {"id":"sync_status","label":"Synchronization status","description":"Show when synchronization last ran and what it changed.","button_label":"Show status","button_color":"blue"},
+    {"id":"reconcile_now","label":"Repair curated categories now","description":"Check new and previously curated VOD and repair category assignments using your saved mappings.","button_label":"Synchronize now","button_color":"green"},
+    {"id":"sync_status","label":"Synchronization status","description":"Check watcher health, including disabled, stale, or failed synchronization, and the last result.","button_label":"Show status","button_color":"blue"},
     {"id":"on_m3u_refresh","label":"Watch for VOD after M3U refresh","description":"Internal event notice; continuous synchronization waits for the separate VOD import.","events":["m3u_refresh"]}
   ]
 }
