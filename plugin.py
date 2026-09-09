@@ -65,7 +65,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.9"
+    version = "0.8.10"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -86,9 +86,9 @@ class Plugin:
         },
         {
             "id": "tmdb_cleanup_help",
-            "label": "TMDB Clean-up",
+            "label": "Automatic TMDB titles and optional artwork",
             "type": "info",
-            "value": "Enable TMDB Clean-up beneath only the categories you want managed. The category language prefix selects localized metadata and artwork; uncertain matches are left unchanged.",
+            "value": "Official TMDB titles are applied automatically. Each category's TMDB Artwork switch controls poster replacement only. Language comes from the category/title prefix; unprefixed titles use English. Work runs in small batches during the one-minute watcher cycle, so large libraries take multiple passes; the watcher status shows how many remain. Uncertain matches are left unchanged.",
         },
         {
             "id": "tmdb_api_key",
@@ -282,9 +282,9 @@ class Plugin:
         },
         {
             "id": "tmdb_cleanup_now",
-            "label": "Run selected TMDB clean-up now",
-            "description": "Clean titles and posters in categories whose TMDB Clean-up switch is enabled.",
-            "button_label": "Clean selected VOD now",
+            "label": "Run TMDB normalization now",
+            "description": "Normalize titles in all active VOD categories and enrich posters only where TMDB Artwork is enabled.",
+            "button_label": "Normalize VOD now",
             "button_color": "green",
         },
         {
@@ -396,8 +396,10 @@ class Plugin:
         self, settings: dict[str, Any], plugin_enabled: bool
     ) -> dict[str, Any]:
         status = self._read_reconcile_status()
-        selected = sum(
-            len(values) for values in self._effective_tmdb_cleanup_categories(settings).values()
+        normalization_categories = self._automatic_tmdb_categories()
+        selected = sum(len(values) for values in normalization_categories.values())
+        artwork_selected = sum(
+            len(values) for values in self._selected_tmdb_artwork_categories(settings).values()
         )
         thread_alive = bool(
             self._reconcile_thread is not None and self._reconcile_thread.is_alive()
@@ -436,9 +438,11 @@ class Plugin:
         tmdb = status.get("last_tmdb_result") or status.get("tmdb_cleanup") or {}
         changes = tmdb.get("changes") or {}
         value = (
-            f"{selected} categories selected • last pass {local_time(last_run)} • "
+            f"{selected} active categories normalize automatically • last pass {local_time(last_run)} • "
             f"last changed artwork/titles {local_time(last_cleaned)}. "
-            f"Last result: {changes.get('cleaned', 0)} cleaned, "
+            f"{artwork_selected} artwork categories enabled. Last result: "
+            f"{changes.get('titles_normalized', 0)} titles normalized, "
+            f"{changes.get('artwork_enriched', 0)} posters enriched, "
             f"{changes.get('already_clean', 0)} already clean, "
             f"{changes.get('ambiguous', 0) + changes.get('unmatched', 0)} uncertain, "
             f"{changes.get('no_clean_poster', 0)} without a suitable poster, "
@@ -530,24 +534,16 @@ class Plugin:
                     parse_language_aliases(settings.get("language_prefix_mappings", "")),
                 )
                 language_help = (
-                    f"Detected {prefix}| and will request {language} titles/posters."
+                    f"Detected {prefix}| and will request {language} poster artwork."
                     if language
-                    else "No supported language prefix detected; add it under Language prefix mappings before enabling."
+                    else "No supported language prefix detected; English poster artwork will be requested."
                 )
                 fields.append({
                     "id": f"category_tmdb_cleanup_{content_type}_{category.pk}",
-                    "label": "TMDB Clean-up",
+                    "label": "TMDB Artwork",
                     "type": "boolean",
                     "default": content_type == "movie",
-                    "help_text": language_help + " Removes provider/actor text from catalog titles and replaces provider artwork with the best-rated localized TMDB poster.",
-                })
-                fields.append({
-                    "id": f"category_tmdb_language_{content_type}_{category.pk}",
-                    "label": "TMDB language override (optional)",
-                    "type": "string",
-                    "default": "",
-                    "placeholder": "Auto, or enter en / es / fr / it…",
-                    "help_text": "Use this only when tidyVOD already removed the source prefix and the provider title has no usable language prefix.",
+                    "help_text": language_help + " Replaces poster artwork only; official TMDB title normalization runs automatically whether this is on or off.",
                 })
         if not fields:
             fields.append({
@@ -559,7 +555,7 @@ class Plugin:
         return fields
 
     @staticmethod
-    def _effective_tmdb_cleanup_categories(
+    def _selected_tmdb_artwork_categories(
         settings: dict[str, Any],
     ) -> dict[str, set[int]]:
         selected = selected_tmdb_cleanup_categories(settings)
@@ -574,6 +570,20 @@ class Plugin:
             category_id for category_id in active_movie_ids
             if bool(settings.get(f"category_tmdb_cleanup_movie_{category_id}", True))
         )
+        return selected
+
+    @staticmethod
+    def _automatic_tmdb_categories() -> dict[str, set[int]]:
+        from apps.vod.models import VODCategory
+
+        rows = VODCategory.objects.filter(
+            m3u_relations__m3u_account__is_active=True,
+            m3u_relations__enabled=True,
+        ).values_list("category_type", "pk").distinct()
+        selected = {"movie": set(), "series": set()}
+        for content_type, category_id in rows:
+            if content_type in selected:
+                selected[content_type].add(category_id)
         return selected
 
     @staticmethod
@@ -692,7 +702,10 @@ class Plugin:
         status = self._read_reconcile_status()
         status["last_tmdb_run_at"] = now
         status["last_tmdb_result"] = result
-        if (result.get("changes") or {}).get("cleaned", 0):
+        changes = result.get("changes") or {}
+        if any(changes.get(key, 0) for key in (
+            "titles_normalized", "artwork_enriched", "artwork_restored"
+        )):
             status["last_cleaned_at"] = now
         self._atomic_json_write(self._reconcile_status_path(), status)
 
@@ -783,7 +796,7 @@ class Plugin:
     ) -> dict[str, Any]:
         mappings = selected_category_mappings(settings)
         hidden = selected_hidden_categories(settings)
-        tmdb_selected = self._effective_tmdb_cleanup_categories(settings)
+        tmdb_selected = self._automatic_tmdb_categories()
         mapping_count = sum(len(group) for group in mappings.values())
         hidden_count = sum(len(group) for group in hidden.values())
         tmdb_count = sum(len(group) for group in tmdb_selected.values())
@@ -835,7 +848,10 @@ class Plugin:
                 tmdb_result = result.get("tmdb_cleanup") or {}
                 status["last_tmdb_run_at"] = completed_at
                 status["last_tmdb_result"] = tmdb_result
-                if (tmdb_result.get("changes") or {}).get("cleaned", 0):
+                tmdb_changes = tmdb_result.get("changes") or {}
+                if any(tmdb_changes.get(key, 0) for key in (
+                    "titles_normalized", "artwork_enriched", "artwork_restored"
+                )):
                     status["last_cleaned_at"] = completed_at
                 elif previous.get("last_cleaned_at"):
                     status["last_cleaned_at"] = previous["last_cleaned_at"]
@@ -970,8 +986,8 @@ class Plugin:
             )
         else:
             category_message = "No category assignments needed repair."
-        if any(self._effective_tmdb_cleanup_categories(settings).values()):
-            category_message += f" {tmdb_result.get('message', 'TMDB cleanup did not return a result.')}"
+        if any(self._automatic_tmdb_categories().values()):
+            category_message += f" {tmdb_result.get('message', 'TMDB normalization did not return a result.')}"
         result = {
             "status": "ok",
             "changes": dict(counts),
@@ -1109,7 +1125,7 @@ class Plugin:
                     "message": "Automatic synchronization is disabled. Enable tidyVOD and Keep curated categories synchronized to protect your categories."}
         if not (any(selected_category_mappings(config.settings or {}).values())
                 or any(selected_hidden_categories(config.settings or {}).values())
-                or any(self._effective_tmdb_cleanup_categories(config.settings or {}).values())):
+                or any(self._automatic_tmdb_categories().values())):
             return {"status": "ok", "health": "idle", "synchronization": status,
                     "message": "No category mappings are saved; nothing to synchronize."}
         if not status:
@@ -1443,7 +1459,6 @@ class Plugin:
         override_pattern = re.compile(r"^category_override_(movie|series)_(\d+)$")
         hidden_pattern = re.compile(r"^category_hidden_(movie|series)_(\d+)$")
         tmdb_pattern = re.compile(r"^category_tmdb_cleanup_(movie|series)_(\d+)$")
-        tmdb_language_pattern = re.compile(r"^category_tmdb_language_(movie|series)_(\d+)$")
         for key, value in settings.items():
             match = override_pattern.fullmatch(str(key))
             if match:
@@ -1460,12 +1475,8 @@ class Plugin:
                 content_type, category_id = match.group(1), int(match.group(2))
                 selected.setdefault((content_type, category_id), {})["tmdb_cleanup"] = bool(value)
                 continue
-            match = tmdb_language_pattern.fullmatch(str(key))
-            if match:
-                content_type, category_id = match.group(1), int(match.group(2))
-                selected.setdefault((content_type, category_id), {})["tmdb_language"] = str(value or "").strip()
         selected = {key: values for key, values in selected.items()
-                    if values.get("clean_name") or values.get("hidden") or values.get("tmdb_cleanup") or values.get("tmdb_language")}
+                    if values.get("clean_name") or values.get("hidden") or values.get("tmdb_cleanup")}
         category_ids = [category_id for _, category_id in selected]
         categories = {
             category.pk: category
@@ -1490,7 +1501,6 @@ class Plugin:
                 "clean_name": values.get("clean_name", ""),
                 "hidden": bool(values.get("hidden", False)),
                 "tmdb_cleanup": bool(values.get("tmdb_cleanup", False)),
-                "tmdb_language": values.get("tmdb_language", ""),
             })
         return sorted(
             entries,
@@ -1640,8 +1650,7 @@ class Plugin:
             clean_name = str(entry.get("clean_name") or "").strip()
             hidden = bool(entry.get("hidden", False))
             tmdb_cleanup = bool(entry.get("tmdb_cleanup", False))
-            tmdb_language = str(entry.get("tmdb_language") or "").strip()
-            if category is None or (not clean_name and not hidden and not tmdb_cleanup and not tmdb_language):
+            if category is None or (not clean_name and not hidden and not tmdb_cleanup):
                 missing += 1
                 continue
             if clean_name:
@@ -1650,8 +1659,6 @@ class Plugin:
                 restored[f"category_hidden_{content_type}_{category.pk}"] = True
             if tmdb_cleanup:
                 restored[f"category_tmdb_cleanup_{content_type}_{category.pk}"] = True
-            if tmdb_language:
-                restored[f"category_tmdb_language_{content_type}_{category.pk}"] = tmdb_language
             restored_categories.add((content_type, category.pk))
 
         with transaction.atomic():
@@ -1661,7 +1668,7 @@ class Plugin:
             updated_settings = {
                 key: value
                 for key, value in (config.settings or {}).items()
-                if not str(key).startswith(("category_override_", "category_hidden_", "category_tmdb_cleanup_", "category_tmdb_language_"))
+                if not str(key).startswith(("category_override_", "category_hidden_", "category_tmdb_cleanup_"))
             }
             updated_settings.update(restored)
             config.settings = updated_settings
@@ -1714,6 +1721,18 @@ class Plugin:
         )
 
     @staticmethod
+    def _tmdb_language(
+        source_name: str, provider_title: str, aliases: dict[str, str]
+    ) -> tuple[str, str, str]:
+        prefix, language = category_language(source_name, aliases)
+        if language:
+            return prefix, language, "category"
+        prefix, language = provider_title_language(provider_title, aliases)
+        if language:
+            return prefix, language, "title"
+        return "EN", "en", "default"
+
+    @staticmethod
     def _relation_tmdb_artwork_url(relation: Any) -> str | None:
         props = relation.custom_properties or {}
         if not isinstance(props, dict):
@@ -1732,24 +1751,26 @@ class Plugin:
     def _run_tmdb_cleanup(
         self, settings: dict[str, Any], logger: Any, *, limit: int
     ) -> dict[str, Any]:
-        """Conservatively normalize titles and artwork for opted-in source categories."""
+        """Normalize every active title; enrich artwork only for opted-in categories."""
         from urllib.error import HTTPError, URLError
         from urllib.parse import urlencode
         from urllib.request import Request, urlopen
 
         logger = logger or logging.getLogger("dispatcharr.plugins.tidyvod")
-        selected = self._effective_tmdb_cleanup_categories(settings)
+        artwork_selected = self._selected_tmdb_artwork_categories(settings)
+        selected = self._automatic_tmdb_categories()
         total_selected = sum(len(values) for values in selected.values())
+        total_artwork_selected = sum(len(values) for values in artwork_selected.values())
         if not total_selected:
-            return {"status": "ok", "changes": {}, "message": "No categories have TMDB Clean-up enabled."}
+            return {"status": "ok", "changes": {}, "message": "No active VOD categories are available for TMDB normalization."}
         api_key = str(settings.get("tmdb_api_key", "") or os.environ.get("TMDB_API_KEY", "")).strip()
         if not api_key:
             return {
                 "status": "error",
                 "changes": {},
-                "message": "TMDB Clean-up is selected, but no TMDB API key is configured.",
+                "message": "Automatic TMDB normalization needs a TMDB API key, but none is configured.",
             }
-        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, VODLogo
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, VODCategory, VODLogo
 
         aliases = parse_language_aliases(settings.get("language_prefix_mappings", ""))
         removable = parse_cleanup_tokens(settings.get("removable_title_tags", ""))
@@ -1759,27 +1780,20 @@ class Plugin:
         ))
         keep_prefix = bool(settings.get("keep_language_prefix", True))
         player_safe_titles = bool(settings.get("player_safe_tmdb_titles", True))
-        entries = self._mapping_entries(settings)
-        names = {
-            kind: {
-                entry.get("provider_name") for entry in entries
-                if entry["content_type"] == kind
-                and entry.get("tmdb_cleanup")
-                and entry.get("provider_name")
-            }
-            for kind in ("movie", "series")
-        }
-        saved_language_by_source = {
-            kind: {
-                (entry.get("category_id"), entry.get("provider_name")): str(entry.get("tmdb_language") or "").strip()
-                for entry in entries if entry["content_type"] == kind and entry.get("tmdb_cleanup")
-            }
-            for kind in ("movie", "series")
-        }
+        source_categories = VODCategory.objects.filter(
+            pk__in=set().union(*selected.values())
+        ).only("pk", "name", "category_type")
+        names = {"movie": set(), "series": set()}
+        for category in source_categories:
+            if category.category_type in names:
+                names[category.category_type].add(category.name)
         account_filter = self._account_filter(settings)
         candidates: dict[tuple[str, int], dict[str, Any]] = {}
         conflicts: set[tuple[str, int]] = set()
-        counts = Counter(selected_categories=total_selected)
+        counts = Counter(
+            normalization_categories=total_selected,
+            artwork_categories=total_artwork_selected,
+        )
 
         for kind, relation_model, item_field in (
             ("movie", M3UMovieRelation, "movie"),
@@ -1808,25 +1822,13 @@ class Plugin:
                     continue
                 item = getattr(relation, item_field)
                 provider_title = self._relation_provider_title(relation, item)
-                override = str(settings.get(f"category_tmdb_language_{kind}_{source_id}", "") or "").strip()
-                if not override:
-                    override = saved_language_by_source[kind].get((source_id, source_name), "")
-                if override:
-                    prefix = override.upper().split("-", 1)[0]
-                    language = aliases.get(override.upper(), override.lower())
-                    if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2})?", language):
-                        counts["invalid_language_override"] += 1
-                        continue
-                    counts["language_override"] += 1
-                else:
-                    prefix, language = category_language(source_name, aliases)
-                if not language:
-                    prefix, language = provider_title_language(provider_title, aliases)
-                    if language:
-                        counts["title_language_fallback"] += 1
-                if not language:
-                    counts["missing_language_prefix"] += 1
-                    continue
+                prefix, language, language_source = self._tmdb_language(
+                    source_name, provider_title, aliases
+                )
+                if language_source == "title":
+                    counts["title_language_fallback"] += 1
+                elif language_source == "default":
+                    counts["english_language_default"] += 1
                 key = (kind, item.pk)
                 previous = candidates.get(key)
                 if previous and previous["language"].split("-", 1)[0] != language.split("-", 1)[0]:
@@ -1835,6 +1837,10 @@ class Plugin:
                     continue
                 if previous and key not in conflicts:
                     previous["relations"].append(relation)
+                    previous["artwork_enabled"] = (
+                        previous["artwork_enabled"]
+                        or source_id in artwork_selected[kind]
+                    )
                 elif key not in conflicts:
                     candidates[key] = {
                         "kind": kind,
@@ -1842,6 +1848,7 @@ class Plugin:
                         "item": item,
                         "prefix": prefix,
                         "language": language,
+                        "artwork_enabled": source_id in artwork_selected[kind],
                         "provider_title": provider_title,
                         "relations": [relation],
                     }
@@ -1853,9 +1860,27 @@ class Plugin:
             props = item.custom_properties or {}
             marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
             current_logo = getattr(getattr(item, "logo", None), "url", None)
-            relation_artwork_ready = all(
-                self._relation_tmdb_artwork_url(relation) == marker.get("tmdb_cleanup_poster_url")
+            relation_artwork_managed = any(
+                bool(((relation.custom_properties or {}).get(MARKER) or {}).get(
+                    "tmdb_relation_artwork_managed"
+                ))
                 for relation in candidate["relations"]
+            )
+            relation_artwork_ready = (
+                candidate["artwork_enabled"]
+                and bool(marker.get("tmdb_cleanup_poster_url"))
+                and all(
+                    self._relation_tmdb_artwork_url(relation)
+                    == marker.get("tmdb_cleanup_poster_url")
+                    for relation in candidate["relations"]
+                )
+            )
+            artwork_state_ready = (
+                relation_artwork_ready
+                and marker.get("tmdb_cleanup_poster_url") == current_logo
+                if candidate["artwork_enabled"]
+                else not relation_artwork_managed
+                and not bool(marker.get("tmdb_artwork_enabled", False))
             )
             if (
                 marker.get("tmdb_cleanup_managed")
@@ -1863,15 +1888,17 @@ class Plugin:
                 and marker.get("tmdb_cleanup_keep_prefix") == keep_prefix
                 and marker.get("tmdb_cleanup_player_safe") == player_safe_titles
                 and marker.get("tmdb_cleanup_name") == item.name
-                and marker.get("tmdb_cleanup_poster_url") == current_logo
-                and relation_artwork_ready
+                and artwork_state_ready
             ):
                 counts["already_clean"] += 1
                 continue
             if (
                 marker.get("tmdb_cleanup_managed")
                 and marker.get("tmdb_cleanup_name")
-                and marker.get("tmdb_cleanup_poster_url")
+                and (
+                    not candidate["artwork_enabled"]
+                    or marker.get("tmdb_cleanup_poster_url")
+                )
                 and marker.get("tmdb_cleanup_language") == candidate["language"]
                 and marker.get("tmdb_cleanup_keep_prefix") == keep_prefix
             ):
@@ -1894,7 +1921,10 @@ class Plugin:
                     "status": "ok",
                     "tmdb_id": marker.get("tmdb_cleanup_tmdb_id", ""),
                     "name": cached_name,
-                    "poster_url": marker["tmdb_cleanup_poster_url"],
+                    "poster_url": (
+                        marker["tmdb_cleanup_poster_url"]
+                        if candidate["artwork_enabled"] else None
+                    ),
                     "poster_language": marker.get("tmdb_cleanup_poster_language"),
                     "cached": True,
                 }
@@ -1984,16 +2014,30 @@ class Plugin:
                 except (TypeError, ValueError):
                     year = item.year
                 poster = self._best_tmdb_poster((detail.get("images") or {}).get("posters") or [], language)
-                if not title or not poster:
-                    return {"status": "no_clean_poster"}
+                if not title:
+                    return {"status": "unmatched"}
+                if candidate["artwork_enabled"] and not poster:
+                    return {
+                        "status": "ok",
+                        "tmdb_id": tmdb_id,
+                        "name": formatted_tmdb_title(
+                            str(title), year, candidate["prefix"], keep_prefix, player_safe_titles
+                        ),
+                        "poster_url": None,
+                        "poster_language": None,
+                        "no_clean_poster": True,
+                    }
                 return {
                     "status": "ok",
                     "tmdb_id": tmdb_id,
                     "name": formatted_tmdb_title(
                         str(title), year, candidate["prefix"], keep_prefix, player_safe_titles
                     ),
-                    "poster_url": f"https://image.tmdb.org/t/p/w780{poster['file_path']}",
-                    "poster_language": poster.get("iso_639_1"),
+                    "poster_url": (
+                        f"https://image.tmdb.org/t/p/w780{poster['file_path']}"
+                        if poster and candidate["artwork_enabled"] else None
+                    ),
+                    "poster_language": poster.get("iso_639_1") if poster else None,
                 }
             except PermissionError:
                 return {"status": "unauthorized"}
@@ -2014,39 +2058,65 @@ class Plugin:
                     counts[status] += 1
                     continue
                 item = candidate["item"]
-                logo, _ = VODLogo.objects.get_or_create(
-                    url=result["poster_url"],
-                    defaults={"name": f"tidyVOD TMDB - {result['name']}"[:255]},
-                )
+                poster_url = result.get("poster_url")
+                artwork_enabled = bool(candidate["artwork_enabled"] and poster_url)
+                logo = None
+                if artwork_enabled:
+                    logo, _ = VODLogo.objects.get_or_create(
+                        url=poster_url,
+                        defaults={"name": f"tidyVOD TMDB - {result['name']}"[:255]},
+                    )
                 item.refresh_from_db(fields=["name", "logo", "custom_properties"])
                 props = dict(item.custom_properties or {})
                 existing = props.get(MARKER, {})
                 marker = dict(existing) if isinstance(existing, dict) else {}
                 marker.setdefault("original_name", item.name)
                 marker.setdefault("original_logo_id", item.logo_id)
+                previously_managed_artwork = bool(
+                    marker.get("tmdb_artwork_enabled")
+                    or marker.get("tmdb_cleanup_poster_url")
+                )
                 marker.update({
                     "tmdb_cleanup_managed": True,
                     "tmdb_cleanup_tmdb_id": result["tmdb_id"],
                     "tmdb_cleanup_language": candidate["language"],
-                    "tmdb_cleanup_poster_language": result["poster_language"],
                     "tmdb_cleanup_keep_prefix": keep_prefix,
                     "tmdb_cleanup_player_safe": player_safe_titles,
                     "tmdb_cleanup_name": result["name"],
-                    "tmdb_cleanup_poster_url": result["poster_url"],
+                    "tmdb_artwork_enabled": artwork_enabled,
                 })
+                if artwork_enabled:
+                    marker["tmdb_cleanup_poster_language"] = result["poster_language"]
+                    marker["tmdb_cleanup_poster_url"] = poster_url
+                else:
+                    marker.pop("tmdb_cleanup_poster_language", None)
+                    marker.pop("tmdb_cleanup_poster_url", None)
                 props[MARKER] = marker
+                previous_name = item.name
                 item.name = result["name"]
-                item.logo = logo
+                fields = ["name", "custom_properties", "updated_at"]
+                if artwork_enabled:
+                    item.logo = logo
+                    fields.append("logo")
+                    counts["artwork_enriched"] += 1
+                elif previously_managed_artwork:
+                    item.logo_id = marker.get("original_logo_id")
+                    fields.append("logo")
+                    counts["artwork_restored"] += 1
                 item.custom_properties = props
                 try:
                     with transaction.atomic():
-                        item.save(update_fields=["name", "logo", "custom_properties", "updated_at"])
+                        item.save(update_fields=fields)
                 except IntegrityError:
                     counts["save_conflicts"] += 1
                     continue
                 counts["cleaned"] += 1
-                if result.get("cached"):
+                if previous_name != result["name"]:
+                    counts["titles_normalized"] += 1
+                if result.get("cached") and artwork_enabled:
                     counts["artwork_repairs"] += 1
+                if result.get("no_clean_poster"):
+                    counts["no_clean_poster"] += 1
                 for relation in candidate["relations"]:
                     relation_props = dict(relation.custom_properties or {})
                     relation_marker_value = relation_props.get(MARKER, {})
@@ -2058,15 +2128,34 @@ class Plugin:
                     detail = dict(detail_value) if isinstance(detail_value, dict) else {}
                     info_value = relation_props.get("info", {})
                     info = dict(info_value) if isinstance(info_value, dict) else {}
-                    if not relation_marker.get("tmdb_relation_artwork_managed"):
-                        relation_marker["tmdb_original_relation_movie_image_present"] = "movie_image" in detail
-                        relation_marker["tmdb_original_relation_movie_image"] = detail.get("movie_image")
-                        relation_marker["tmdb_original_relation_info_movie_image_present"] = "movie_image" in info
-                        relation_marker["tmdb_original_relation_info_movie_image"] = info.get("movie_image")
-                    relation_marker["tmdb_relation_artwork_managed"] = True
-                    relation_marker["tmdb_relation_artwork_url"] = result["poster_url"]
-                    detail["movie_image"] = result["poster_url"]
-                    info["movie_image"] = result["poster_url"]
+                    if artwork_enabled:
+                        if not relation_marker.get("tmdb_relation_artwork_managed"):
+                            relation_marker["tmdb_original_relation_movie_image_present"] = "movie_image" in detail
+                            relation_marker["tmdb_original_relation_movie_image"] = detail.get("movie_image")
+                            relation_marker["tmdb_original_relation_info_movie_image_present"] = "movie_image" in info
+                            relation_marker["tmdb_original_relation_info_movie_image"] = info.get("movie_image")
+                        relation_marker["tmdb_relation_artwork_managed"] = True
+                        relation_marker["tmdb_relation_artwork_url"] = poster_url
+                        detail["movie_image"] = poster_url
+                        info["movie_image"] = poster_url
+                    elif relation_marker.get("tmdb_relation_artwork_managed"):
+                        if relation_marker.get("tmdb_original_relation_movie_image_present"):
+                            detail["movie_image"] = relation_marker.get("tmdb_original_relation_movie_image")
+                        else:
+                            detail.pop("movie_image", None)
+                        if relation_marker.get("tmdb_original_relation_info_movie_image_present"):
+                            info["movie_image"] = relation_marker.get("tmdb_original_relation_info_movie_image")
+                        else:
+                            info.pop("movie_image", None)
+                        for key in (
+                            "tmdb_relation_artwork_managed",
+                            "tmdb_relation_artwork_url",
+                            "tmdb_original_relation_movie_image_present",
+                            "tmdb_original_relation_movie_image",
+                            "tmdb_original_relation_info_movie_image_present",
+                            "tmdb_original_relation_info_movie_image",
+                        ):
+                            relation_marker.pop(key, None)
                     relation_props["detailed_info"] = detail
                     relation_props["info"] = info
                     relation_props[MARKER] = relation_marker
@@ -2085,12 +2174,15 @@ class Plugin:
             "status": "ok",
             "changes": dict(counts),
             "message": (
-                f"TMDB: {counts['selected_categories']} categories selected; "
-                f"{counts['cleaned']} titles/posters cleaned, {counts['already_clean']} already clean, "
+                f"TMDB: {counts['normalization_categories']} categories normalized automatically; "
+                f"{counts['artwork_categories']} artwork categories enabled, "
+                f"{counts['titles_normalized']} titles changed, "
+                f"{counts['artwork_enriched']} posters enriched, "
+                f"{counts['artwork_restored']} posters restored after opt-out, "
+                f"{counts['already_clean']} already current, "
                 f"{counts['artwork_repairs']} existing poster assignments repaired, "
                 f"{counts['ambiguous'] + counts['unmatched']} uncertain, "
-                f"{counts['missing_language_prefix']} missing a recognized category/title language prefix, "
-                f"{counts['invalid_language_override']} invalid language overrides, "
+                f"{counts['english_language_default']} used the English default, "
                 f"{counts['language_conflicts']} shared-language conflicts, "
                 f"{counts['no_clean_poster']} without a localized/English poster, "
                 f"{counts['request_error']} request errors, and {counts['remaining']} remaining."
@@ -2185,7 +2277,7 @@ class Plugin:
             "status": "ok",
             "file": report_path,
             "changes": dict(counts),
-            "samples": [{"type": "cleaned title", "change": title} for title in titles],
+            "samples": [{"type": "TMDB-normalized title", "change": title} for title in titles],
             "message": (
                 f"{total} TMDB-managed titles ({counts['movie']} movies, {counts['series']} series); "
                 f"{counts['item_posters_need_repair']} item-level and "

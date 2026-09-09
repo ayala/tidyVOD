@@ -1,5 +1,6 @@
 import contextlib
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import types
@@ -126,9 +127,16 @@ class FakeCategoryQuerySet(list):
     def order_by(self, *fields):
         return self
 
+    def only(self, *fields):
+        return self
+
     def values_list(self, *fields, **kwargs):
         if kwargs.get("flat") and fields == ("pk",):
             return FakeCategoryQuerySet([item.pk for item in self])
+        if fields == ("category_type", "pk"):
+            return FakeCategoryQuerySet([
+                (item.category_type, item.pk) for item in self
+            ])
         return self
 
 
@@ -144,6 +152,25 @@ class FakeEditorCategoryManager:
             category for category in self.categories
             if category.category_type == category_type
         ])
+
+
+class FakeLogoManager:
+    def get_or_create(self, *, url, defaults):
+        return types.SimpleNamespace(pk=99, url=url, name=defaults["name"]), True
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
 
 
 class ReconciliationTests(unittest.TestCase):
@@ -269,18 +296,28 @@ class ReconciliationTests(unittest.TestCase):
             "last_tmdb_run_at": now.isoformat(),
             "last_cleaned_at": now.isoformat(),
             "last_tmdb_result": {
-                "changes": {"cleaned": 7, "already_clean": 10, "remaining": 3}
+                "changes": {
+                    "titles_normalized": 7,
+                    "artwork_enriched": 5,
+                    "already_clean": 10,
+                    "remaining": 3,
+                }
             },
         })
-        field = plugin._tmdb_watcher_field(
-            {
-                "sync_curated_categories": True,
-                "category_tmdb_cleanup_movie_12": True,
-            },
-            True,
-        )
+        with patch.object(
+            plugin, "_automatic_tmdb_categories",
+            return_value={"movie": {12}, "series": set()},
+        ):
+            field = plugin._tmdb_watcher_field(
+                {
+                    "sync_curated_categories": True,
+                    "category_tmdb_cleanup_movie_12": True,
+                },
+                True,
+            )
         self.assertEqual(field["label"], "TMDB watcher — WATCHING")
-        self.assertIn("7 cleaned", field["value"])
+        self.assertIn("7 titles normalized", field["value"])
+        self.assertIn("5 posters enriched", field["value"])
         self.assertIn("3 queued", field["value"])
 
     def test_category_editor_has_a_gap_between_movies_and_series(self):
@@ -327,14 +364,12 @@ class ReconciliationTests(unittest.TestCase):
                 "category_override_movie_12",
                 "category_hidden_movie_12",
                 "category_tmdb_cleanup_movie_12",
-                "category_tmdb_language_movie_12",
                 "movie_series_section_gap_1",
                 "movie_series_section_gap_2",
                 "series_category_heading",
                 "category_override_series_22",
                 "category_hidden_series_22",
                 "category_tmdb_cleanup_series_22",
-                "category_tmdb_language_series_22",
             ],
         )
         spacers = [field for field in fields if field["id"].startswith("movie_series_section_gap_")]
@@ -344,16 +379,17 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(hide["label"], "Hide this category")
         self.assertFalse(hide["default"])
         cleanup = next(field for field in fields if field["id"] == "category_tmdb_cleanup_movie_12")
-        self.assertEqual(cleanup["label"], "TMDB Clean-up")
+        self.assertEqual(cleanup["label"], "TMDB Artwork")
         self.assertTrue(cleanup["default"])
-        self.assertIn("No supported language prefix", cleanup["help_text"])
+        self.assertIn("English poster artwork", cleanup["help_text"])
+        self.assertIn("title normalization runs automatically", cleanup["help_text"])
         movie = next(field for field in fields if field["id"] == "category_override_movie_12")
         self.assertEqual(
             movie["help_text"],
             "10 movies • 0 in original category → 10 moved by tidyVOD • Provider",
         )
 
-    def test_effective_tmdb_cleanup_categories_defaults_active_movies_on(self):
+    def test_tmdb_artwork_categories_default_active_movies_on(self):
         categories = [
             types.SimpleNamespace(pk=12, category_type="movie"),
             types.SimpleNamespace(pk=13, category_type="movie"),
@@ -361,11 +397,29 @@ class ReconciliationTests(unittest.TestCase):
         sys.modules["apps.vod.models"].VODCategory = types.SimpleNamespace(
             objects=FakeEditorCategoryManager(categories)
         )
-        selected = self.module.Plugin._effective_tmdb_cleanup_categories({
+        selected = self.module.Plugin._selected_tmdb_artwork_categories({
             "category_tmdb_cleanup_movie_13": False,
             "category_tmdb_cleanup_series_17": True,
         })
         self.assertEqual(selected, {"movie": {12}, "series": {17}})
+
+    def test_automatic_tmdb_normalization_includes_movies_and_series(self):
+        categories = [
+            types.SimpleNamespace(pk=12, category_type="movie"),
+            types.SimpleNamespace(pk=22, category_type="series"),
+        ]
+        sys.modules.setdefault("apps", types.ModuleType("apps"))
+        sys.modules.setdefault("apps.vod", types.ModuleType("apps.vod"))
+        vod_models = sys.modules.setdefault(
+            "apps.vod.models", types.ModuleType("apps.vod.models")
+        )
+        vod_models.VODCategory = types.SimpleNamespace(
+            objects=FakeEditorCategoryManager(categories)
+        )
+        self.assertEqual(
+            self.module.Plugin._automatic_tmdb_categories(),
+            {"movie": {12}, "series": {22}},
+        )
 
     def test_tmdb_poster_prefers_requested_language_and_never_textless(self):
         posters = [
@@ -378,6 +432,98 @@ class ReconciliationTests(unittest.TestCase):
         self.assertIsNone(self.module.Plugin._best_tmdb_poster([
             {"file_path": "/textless.jpg", "iso_639_1": None, "vote_count": 100},
         ], "es"))
+
+    def test_tmdb_language_uses_category_then_title_then_english(self):
+        aliases = {"EN": "en", "ES": "es", "FR": "fr"}
+        self.assertEqual(
+            self.module.Plugin._tmdb_language(
+                "ES| Horror", "EN - Rec (2007)", aliases
+            ),
+            ("ES", "es", "category"),
+        )
+        self.assertEqual(
+            self.module.Plugin._tmdb_language(
+                "Horror", "FR - Rec (2007)", aliases
+            ),
+            ("FR", "fr", "title"),
+        )
+        self.assertEqual(
+            self.module.Plugin._tmdb_language("Horror", "Rec (2007)", aliases),
+            ("EN", "en", "default"),
+        )
+
+    def test_artwork_off_still_normalizes_title_without_touching_poster(self):
+        category = types.SimpleNamespace(pk=12, name="Movies", category_type="movie")
+        provider_logo = types.SimpleNamespace(pk=7, url="https://provider/poster.jpg")
+        item = types.SimpleNamespace(
+            pk=101,
+            tmdb_id="123",
+            imdb_id="",
+            year=1989,
+            name="Die Hard 4K (1989)",
+            logo=provider_logo,
+            logo_id=7,
+            custom_properties={},
+        )
+        item.refresh_from_db = Mock()
+        item.save = Mock()
+        relation = types.SimpleNamespace(
+            pk=201,
+            category=category,
+            category_id=12,
+            movie=item,
+            custom_properties={
+                "basic_data": {"name": "Die Hard 4K (1989)"},
+                "info": {"movie_image": "https://provider/poster.jpg"},
+            },
+        )
+        movie_manager = FakeRelationManager([relation])
+        series_manager = FakeRelationManager([])
+        sys.modules.setdefault("apps", types.ModuleType("apps"))
+        sys.modules.setdefault("apps.vod", types.ModuleType("apps.vod"))
+        vod_models = sys.modules.setdefault(
+            "apps.vod.models", types.ModuleType("apps.vod.models")
+        )
+        vod_models.VODCategory = types.SimpleNamespace(
+            objects=FakeEditorCategoryManager([category])
+        )
+        vod_models.M3UMovieRelation = types.SimpleNamespace(objects=movie_manager)
+        vod_models.M3USeriesRelation = types.SimpleNamespace(objects=series_manager)
+        vod_models.VODLogo = types.SimpleNamespace(objects=FakeLogoManager())
+        plugin = self.module.Plugin.__new__(self.module.Plugin)
+        plugin._account_filter = Mock(return_value={})
+        detail = {
+            "id": 123,
+            "title": "Die Hard",
+            "release_date": "1989-07-15",
+            "images": {"posters": [{
+                "file_path": "/die-hard.jpg",
+                "iso_639_1": "en",
+                "vote_count": 20,
+            }]},
+        }
+        with (
+            patch.object(plugin, "_automatic_tmdb_categories", return_value={
+                "movie": {12}, "series": set(),
+            }),
+            patch.object(plugin, "_selected_tmdb_artwork_categories", return_value={
+                "movie": set(), "series": set(),
+            }),
+            patch("urllib.request.urlopen", return_value=FakeHTTPResponse(detail)),
+        ):
+            result = plugin._run_tmdb_cleanup(
+                {"tmdb_api_key": "test", "keep_language_prefix": True},
+                Mock(),
+                limit=10,
+            )
+        self.assertEqual(item.name, "EN - Die Hard (1989)")
+        self.assertIs(item.logo, provider_logo)
+        self.assertEqual(
+            relation.custom_properties["info"]["movie_image"],
+            "https://provider/poster.jpg",
+        )
+        self.assertEqual(result["changes"]["titles_normalized"], 1)
+        self.assertEqual(result["changes"].get("artwork_enriched", 0), 0)
 
     def test_relation_level_tmdb_artwork_is_detected(self):
         relation = types.SimpleNamespace(custom_properties={

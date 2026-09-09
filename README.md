@@ -1,6 +1,6 @@
 # tidyVOD for Dispatcharr
 
-tidyVOD is a headless Dispatcharr plugin for renaming, combining, hiding, or selectively cleaning provider VOD categories. Every detected movie and series category gets an optional clean-name field plus **Hide this category** and **TMDB Clean-up** switches.
+tidyVOD is a headless Dispatcharr plugin for renaming, combining, hiding, and normalizing provider VOD categories. Every detected movie and series category gets an optional clean-name field plus **Hide this category** and **TMDB Artwork** switches.
 
 For example, entering `Netflix` beside `Netflix Movies`, `Netflix HEVC`, and `Netflix Kids` combines all three in Dispatcharr's curated Xtream output. Entering `Foreign Horror` beside `FR Thriller`, `IT Horror`, and `ES Horror` creates a separate combined category at the same time. Blank fields keep their original category names.
 
@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.9/tidyvod-v0.8.9.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.10/tidyvod-v0.8.10.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -35,7 +35,7 @@ Dispatcharr v0.24.0 or newer is required.
 
 Each provider category has a clean-name field followed by hide and TMDB cleanup switches:
 
-| Provider category | Clean name | Hide | TMDB Clean-up |
+| Provider category | Clean name | Hide | TMDB Artwork |
 | --- | --- | --- | --- |
 | EN\| Netflix Movies 4K | Netflix | Off | On |
 | ES\| Netflix Movies 4K | Netflix ES | Off | On |
@@ -46,11 +46,13 @@ Matching clean names combine automatically. Different clean names create differe
 
 Hidden categories remain visible in tidyVOD settings. **Preview** reports what would be removed without changing data. **Apply** disables the provider category and removes its existing movie or series assignments; the watcher keeps it disabled after later refreshes. Turning Hide off restores the category's previous enabled state. Run a provider VOD refresh to reimport titles that are still available. If a title also has a relation from another visible category or provider, that copy remains.
 
-## TMDB Clean-up
+## Automatic TMDB titles and optional artwork
 
-Enable **TMDB Clean-up** only beneath the source categories that should be managed. A prefix such as `ES|`, `EN|`, `FR|`, or `IT|` selects the localized TMDB title and poster. Prefix mappings are editable under **Language prefix mappings**. By default the visible result retains that identity, for example `ES| El peor vecino del mundo (2022)`; turn off **Keep language prefix in cleaned titles** only if the category name alone is enough to distinguish languages.
+Official TMDB title normalization runs automatically for every active VOD category. The per-category **TMDB Artwork** switch controls only whether tidyVOD replaces poster art. A prefix such as `ES|`, `EN|`, `FR|`, or `IT|` selects the localized title and poster language; unprefixed categories and titles default to English. Prefix mappings are editable under **Language prefix mappings**. By default the visible title retains that identity, for example `ES| El peor vecino del mundo (2022)`; turn off **Keep language prefix in cleaned titles** only if the category name alone is enough to distinguish languages.
 
-Matching is deliberately conservative: an existing TMDB ID is preferred, then an IMDb ID, then one exact normalized title-and-year result. The category prefix is authoritative; when it is absent, a provider title prefix such as `EN -` is accepted as a fallback. For categories whose prefix was already removed, enter `en`, `es`, `fr`, etc. in that row's optional **TMDB language override**. Missing years, ambiguous results, unknown language prefixes, and shared titles selected by conflicting language categories are left unchanged. The final title comes from the confirmed TMDB record, so actor names and provider-added wording disappear. **Remove these provider title tags** is an editable comma-separated list used to form searches; remove a token from that list if it is meaningful for your provider.
+Matching is deliberately conservative: an existing TMDB ID is preferred, then an IMDb ID, then one exact normalized title-and-year result. The category prefix is authoritative; when it is absent, a provider title prefix such as `EN -` is accepted as a fallback, then English is used. Missing years, ambiguous results, and shared titles selected by conflicting language categories are left unchanged. The final title comes from the confirmed TMDB record, so actor names and provider-added wording disappear. **Remove these provider title tags** is an editable comma-separated list used only to form searches; remove a token if it is meaningful for your provider.
+
+Normalization runs automatically in small batches during the one-minute watcher cycle. Large libraries require multiple passes. The Settings status shows whether the watcher is running, the last completed pass, and how many items remain queued.
 
 Artwork selection accepts only posters tagged with the category language or English, never untagged/textless artwork. The requested language wins, followed by the highest-voted English poster. This avoids provider-generated `4K`, `HDR`, codec, audio, and source overlays in normal cases. TMDB does not expose a machine-readable “contains a 4K badge” flag, so no plugin can absolutely certify the pixels without an OCR/image-analysis dependency; a rare incorrectly uploaded TMDB poster may still require manual correction.
 
@@ -157,6 +159,13 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Allow exact TMDB title styling by turning off **Player-safe TMDB titles**.
 - Keep selected TMDB posters in a relation field that survives Dispatcharr's on-demand provider metadata refresh.
 - Report both shared-item and provider-relation poster assignments that need repair.
+
+### 0.8.10 separate titles from artwork
+
+- Normalize official TMDB titles automatically across all active VOD categories.
+- Rename each per-category switch to **TMDB Artwork** and limit it strictly to poster enrichment.
+- Remove the per-category language override; category/title prefixes are detected automatically and unprefixed media defaults to English.
+- Explain the one-minute batch cycle and remaining backlog directly in Settings.
 
 ### 0.8.9 movie cleanup defaults
 
