@@ -65,7 +65,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.8"
+    version = "0.8.9"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -492,17 +492,6 @@ class Plugin:
                 "type": "info",
                 "value": f"{len(rows)} detected. Matching clean names are combined automatically.",
             })
-            if content_type == "movie":
-                fields.append({
-                    "id": "tmdb_cleanup_all_movie_categories",
-                    "label": "Enable TMDB Clean-up for all",
-                    "type": "boolean",
-                    "default": False,
-                    "help_text": (
-                        "When on, every active movie category is included. When off, "
-                        "tidyVOD uses the individual TMDB Clean-up switches below."
-                    ),
-                })
             item_counts = Plugin._source_item_counts(content_type, rows)
             for category in rows:
                 account_names = list(
@@ -549,7 +538,7 @@ class Plugin:
                     "id": f"category_tmdb_cleanup_{content_type}_{category.pk}",
                     "label": "TMDB Clean-up",
                     "type": "boolean",
-                    "default": False,
+                    "default": content_type == "movie",
                     "help_text": language_help + " Removes provider/actor text from catalog titles and replaces provider artwork with the best-rated localized TMDB poster.",
                 })
                 fields.append({
@@ -574,16 +563,17 @@ class Plugin:
         settings: dict[str, Any],
     ) -> dict[str, set[int]]:
         selected = selected_tmdb_cleanup_categories(settings)
-        if bool(settings.get("tmdb_cleanup_all_movie_categories", False)):
-            from apps.vod.models import VODCategory
+        from apps.vod.models import VODCategory
 
-            selected["movie"] = set(
-                VODCategory.objects.filter(
-                    category_type="movie",
-                    m3u_relations__m3u_account__is_active=True,
-                    m3u_relations__enabled=True,
-                ).values_list("pk", flat=True).distinct()
-            )
+        active_movie_ids = VODCategory.objects.filter(
+            category_type="movie",
+            m3u_relations__m3u_account__is_active=True,
+            m3u_relations__enabled=True,
+        ).values_list("pk", flat=True).distinct()
+        selected["movie"].update(
+            category_id for category_id in active_movie_ids
+            if bool(settings.get(f"category_tmdb_cleanup_movie_{category_id}", True))
+        )
         return selected
 
     @staticmethod
