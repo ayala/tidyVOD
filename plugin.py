@@ -65,7 +65,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.7"
+    version = "0.8.8"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -397,7 +397,7 @@ class Plugin:
     ) -> dict[str, Any]:
         status = self._read_reconcile_status()
         selected = sum(
-            len(values) for values in selected_tmdb_cleanup_categories(settings).values()
+            len(values) for values in self._effective_tmdb_cleanup_categories(settings).values()
         )
         thread_alive = bool(
             self._reconcile_thread is not None and self._reconcile_thread.is_alive()
@@ -492,6 +492,17 @@ class Plugin:
                 "type": "info",
                 "value": f"{len(rows)} detected. Matching clean names are combined automatically.",
             })
+            if content_type == "movie":
+                fields.append({
+                    "id": "tmdb_cleanup_all_movie_categories",
+                    "label": "Enable TMDB Clean-up for all",
+                    "type": "boolean",
+                    "default": False,
+                    "help_text": (
+                        "When on, every active movie category is included. When off, "
+                        "tidyVOD uses the individual TMDB Clean-up switches below."
+                    ),
+                })
             item_counts = Plugin._source_item_counts(content_type, rows)
             for category in rows:
                 account_names = list(
@@ -557,6 +568,23 @@ class Plugin:
                 "value": "Enable VOD scanning on an Xtream provider, refresh it, then reload plugins.",
             })
         return fields
+
+    @staticmethod
+    def _effective_tmdb_cleanup_categories(
+        settings: dict[str, Any],
+    ) -> dict[str, set[int]]:
+        selected = selected_tmdb_cleanup_categories(settings)
+        if bool(settings.get("tmdb_cleanup_all_movie_categories", False)):
+            from apps.vod.models import VODCategory
+
+            selected["movie"] = set(
+                VODCategory.objects.filter(
+                    category_type="movie",
+                    m3u_relations__m3u_account__is_active=True,
+                    m3u_relations__enabled=True,
+                ).values_list("pk", flat=True).distinct()
+            )
+        return selected
 
     @staticmethod
     def _source_item_counts(content_type: str, categories: list[Any]) -> dict[int, dict[str, int]]:
@@ -765,7 +793,7 @@ class Plugin:
     ) -> dict[str, Any]:
         mappings = selected_category_mappings(settings)
         hidden = selected_hidden_categories(settings)
-        tmdb_selected = selected_tmdb_cleanup_categories(settings)
+        tmdb_selected = self._effective_tmdb_cleanup_categories(settings)
         mapping_count = sum(len(group) for group in mappings.values())
         hidden_count = sum(len(group) for group in hidden.values())
         tmdb_count = sum(len(group) for group in tmdb_selected.values())
@@ -952,7 +980,7 @@ class Plugin:
             )
         else:
             category_message = "No category assignments needed repair."
-        if any(selected_tmdb_cleanup_categories(settings).values()):
+        if any(self._effective_tmdb_cleanup_categories(settings).values()):
             category_message += f" {tmdb_result.get('message', 'TMDB cleanup did not return a result.')}"
         result = {
             "status": "ok",
@@ -1091,7 +1119,7 @@ class Plugin:
                     "message": "Automatic synchronization is disabled. Enable tidyVOD and Keep curated categories synchronized to protect your categories."}
         if not (any(selected_category_mappings(config.settings or {}).values())
                 or any(selected_hidden_categories(config.settings or {}).values())
-                or any(selected_tmdb_cleanup_categories(config.settings or {}).values())):
+                or any(self._effective_tmdb_cleanup_categories(config.settings or {}).values())):
             return {"status": "ok", "health": "idle", "synchronization": status,
                     "message": "No category mappings are saved; nothing to synchronize."}
         if not status:
@@ -1720,7 +1748,7 @@ class Plugin:
         from urllib.request import Request, urlopen
 
         logger = logger or logging.getLogger("dispatcharr.plugins.tidyvod")
-        selected = selected_tmdb_cleanup_categories(settings)
+        selected = self._effective_tmdb_cleanup_categories(settings)
         total_selected = sum(len(values) for values in selected.values())
         if not total_selected:
             return {"status": "ok", "changes": {}, "message": "No categories have TMDB Clean-up enabled."}

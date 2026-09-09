@@ -123,6 +123,11 @@ class FakeCategoryQuerySet(list):
     def order_by(self, *fields):
         return self
 
+    def values_list(self, *fields, **kwargs):
+        if kwargs.get("flat") and fields == ("pk",):
+            return FakeCategoryQuerySet([item.pk for item in self])
+        return self
+
 
 class FakeEditorCategoryManager:
     def __init__(self, categories):
@@ -316,6 +321,7 @@ class ReconciliationTests(unittest.TestCase):
             ids,
             [
                 "movie_category_heading",
+                "tmdb_cleanup_all_movie_categories",
                 "category_override_movie_12",
                 "category_hidden_movie_12",
                 "category_tmdb_cleanup_movie_12",
@@ -332,6 +338,12 @@ class ReconciliationTests(unittest.TestCase):
         spacers = [field for field in fields if field["id"].startswith("movie_series_section_gap_")]
         self.assertEqual(len(spacers), 2)
         self.assertTrue(all(field["value"] == "\u200c" for field in spacers))
+        all_cleanup = next(
+            field for field in fields
+            if field["id"] == "tmdb_cleanup_all_movie_categories"
+        )
+        self.assertEqual(all_cleanup["label"], "Enable TMDB Clean-up for all")
+        self.assertFalse(all_cleanup["default"])
         hide = next(field for field in fields if field["id"] == "category_hidden_movie_12")
         self.assertEqual(hide["label"], "Hide this category")
         self.assertFalse(hide["default"])
@@ -343,6 +355,29 @@ class ReconciliationTests(unittest.TestCase):
             movie["help_text"],
             "10 movies • 0 in original category → 10 moved by tidyVOD • Provider",
         )
+
+    def test_effective_tmdb_cleanup_categories_uses_individual_switches_when_all_is_off(self):
+        selected = self.module.Plugin._effective_tmdb_cleanup_categories({
+            "category_tmdb_cleanup_movie_9": True,
+            "category_tmdb_cleanup_series_17": True,
+            "tmdb_cleanup_all_movie_categories": False,
+        })
+        self.assertEqual(selected, {"movie": {9}, "series": {17}})
+
+    def test_effective_tmdb_cleanup_categories_selects_every_active_movie_category(self):
+        categories = [
+            types.SimpleNamespace(pk=12, category_type="movie"),
+            types.SimpleNamespace(pk=13, category_type="movie"),
+        ]
+        sys.modules["apps.vod.models"].VODCategory = types.SimpleNamespace(
+            objects=FakeEditorCategoryManager(categories)
+        )
+        selected = self.module.Plugin._effective_tmdb_cleanup_categories({
+            "category_tmdb_cleanup_movie_9": True,
+            "category_tmdb_cleanup_series_17": True,
+            "tmdb_cleanup_all_movie_categories": True,
+        })
+        self.assertEqual(selected, {"movie": {12, 13}, "series": {17}})
 
     def test_tmdb_poster_prefers_requested_language_and_never_textless(self):
         posters = [

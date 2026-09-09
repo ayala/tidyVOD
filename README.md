@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.7/tidyvod-v0.8.7.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.8/tidyvod-v0.8.8.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -157,6 +157,11 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Allow exact TMDB title styling by turning off **Player-safe TMDB titles**.
 - Keep selected TMDB posters in a relation field that survives Dispatcharr's on-demand provider metadata refresh.
 - Report both shared-item and provider-relation poster assignments that need repair.
+
+### 0.8.8 all-movie TMDB switch
+
+- Adds **Enable TMDB Clean-up for all** directly below the **Movie categories** heading.
+- Turning it on includes every active movie category in TMDB cleanup. Turning it off returns to the individual category switches without erasing those choices.
 
 ### 0.8.7 visible watcher status and full report
 
