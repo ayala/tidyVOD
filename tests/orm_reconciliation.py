@@ -120,11 +120,22 @@ class RecoveryTests(unittest.TestCase):
     def test_source_count_follows_items_moved_to_clean_category(self):
         direct = self.relation(self.source)
         self.relation(self.source)
-        self.assertEqual(self.plugin._source_item_counts("movie", [self.source]), {self.source.pk: 2})
+        self.assertEqual(
+            self.plugin._source_item_counts("movie", [self.source]),
+            {self.source.pk: {"total": 2, "original": 2, "moved": 0}},
+        )
         self.run_sync()
         direct.refresh_from_db()
         self.assertEqual(direct.category.name, "Netflix")
-        self.assertEqual(self.plugin._source_item_counts("movie", [self.source]), {self.source.pk: 2})
+        self.assertEqual(
+            self.plugin._source_item_counts("movie", [self.source]),
+            {self.source.pk: {"total": 2, "original": 0, "moved": 2}},
+        )
+        self.relation(self.source)
+        self.assertEqual(
+            self.plugin._source_item_counts("movie", [self.source]),
+            {self.source.pk: {"total": 3, "original": 1, "moved": 2}},
+        )
 
     def test_null_and_unmapped_assignments_recover_from_markers(self):
         wrong = VODCategory.objects.create(name="Wrong category", category_type="movie")

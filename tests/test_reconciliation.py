@@ -279,7 +279,10 @@ class ReconciliationTests(unittest.TestCase):
         with patch.object(
             self.module.Plugin,
             "_source_item_counts",
-            side_effect=lambda content_type, rows: {row.pk: row.item_count for row in rows},
+            side_effect=lambda content_type, rows: {
+                row.pk: {"total": row.item_count, "original": 0, "moved": row.item_count}
+                for row in rows
+            },
         ):
             fields = self.module.Plugin._category_editor_fields()
         ids = [field["id"] for field in fields]
@@ -303,6 +306,11 @@ class ReconciliationTests(unittest.TestCase):
         hide = next(field for field in fields if field["id"] == "category_hidden_movie_12")
         self.assertEqual(hide["label"], "Hide this category")
         self.assertFalse(hide["default"])
+        movie = next(field for field in fields if field["id"] == "category_override_movie_12")
+        self.assertEqual(
+            movie["help_text"],
+            "10 movies • 0 in original category → 10 moved by tidyVOD • Provider",
+        )
 
 
 if __name__ == "__main__":

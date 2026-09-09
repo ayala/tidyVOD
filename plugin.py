@@ -54,7 +54,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.7.5"
+    version = "0.7.6"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -349,7 +349,12 @@ class Plugin:
                 provider_text = ", ".join(account_names)
                 if len(account_names) == 4:
                     provider_text += ", …"
-                description = f"{item_counts.get(category.pk, 0)} {content_type}(s)"
+                count = item_counts.get(category.pk, {"total": 0, "original": 0, "moved": 0})
+                noun = "movies" if content_type == "movie" else "series"
+                description = (
+                    f"{count['total']} {noun} • {count['original']} in original category "
+                    f"→ {count['moved']} moved by tidyVOD"
+                )
                 if provider_text:
                     description += f" • {provider_text}"
                 fields.append({
@@ -377,8 +382,8 @@ class Plugin:
         return fields
 
     @staticmethod
-    def _source_item_counts(content_type: str, categories: list[Any]) -> dict[int, int]:
-        """Count current relations by their provider source, even after curation."""
+    def _source_item_counts(content_type: str, categories: list[Any]) -> dict[int, dict[str, int]]:
+        """Split each source's relations into original and tidyVOD-moved counts."""
         from django.db.models import Count
         from apps.vod.models import M3UMovieRelation, M3USeriesRelation
 
@@ -399,7 +404,7 @@ class Plugin:
             .values("category_id", marker_id, marker_name)
             .annotate(total=Count("pk"))
         )
-        counts = Counter()
+        counts: dict[int, Counter] = defaultdict(Counter)
         for row in rows:
             original_id = row.get(marker_id)
             try:
@@ -413,8 +418,18 @@ class Plugin:
                 or (row.get("category_id") if row.get("category_id") in category_ids else None)
             )
             if source_id is not None:
-                counts[source_id] += row["total"]
-        return dict(counts)
+                total = row["total"]
+                counts[source_id]["total"] += total
+                location = "original" if row.get("category_id") == source_id else "moved"
+                counts[source_id][location] += total
+        return {
+            source_id: {
+                "total": values["total"],
+                "original": values["original"],
+                "moved": values["moved"],
+            }
+            for source_id, values in counts.items()
+        }
 
     def run(self, action: str, params: dict, context: dict) -> dict[str, Any]:
         settings = context.get("settings", {})
