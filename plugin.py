@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone as datetime_timezone
@@ -24,6 +25,12 @@ from django.db.models import Q
 
 from .core import (
     ConfigurationError,
+    category_language,
+    comparable_title,
+    formatted_tmdb_title,
+    normalize_match_title,
+    parse_cleanup_tokens,
+    parse_language_aliases,
     safe_filename,
     category_override,
     category_target,
@@ -33,6 +40,7 @@ from .core import (
     parse_account_names,
     selected_category_mappings,
     selected_hidden_categories,
+    selected_tmdb_cleanup_categories,
 )
 
 
@@ -54,7 +62,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.7.6"
+    version = "0.8.0"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -72,6 +80,41 @@ class Plugin:
             "type": "string",
             "default": "",
             "help_text": "Optional comma-separated Dispatcharr M3U account names. Blank means all active accounts.",
+        },
+        {
+            "id": "tmdb_cleanup_help",
+            "label": "TMDB Clean-up",
+            "type": "info",
+            "value": "Enable TMDB Clean-up beneath only the categories you want managed. The category language prefix selects localized metadata and artwork; uncertain matches are left unchanged.",
+        },
+        {
+            "id": "tmdb_api_key",
+            "label": "TMDB API key",
+            "type": "string",
+            "input_type": "password",
+            "default": "",
+            "help_text": "Optional when TMDB_API_KEY is already configured for Dispatcharr.",
+        },
+        {
+            "id": "keep_language_prefix",
+            "label": "Keep language prefix in cleaned titles",
+            "type": "boolean",
+            "default": True,
+            "help_text": "Recommended. Produces titles such as ES| Die Hard (1989) so localized copies remain recognizable.",
+        },
+        {
+            "id": "language_prefix_mappings",
+            "label": "Language prefix mappings",
+            "type": "string",
+            "default": "EN=en, ES=es, FR=fr, IT=it, DE=de, PT=pt, PL=pl, TR=tr, AR=ar, JA=ja, KO=ko",
+            "help_text": "Editable PREFIX=TMDB-language pairs. Add provider-specific prefixes here.",
+        },
+        {
+            "id": "removable_title_tags",
+            "label": "Remove these provider title tags",
+            "type": "text",
+            "default": "4K, UHD, HDR, HDR10, HDR10+, Dolby Vision, DV, 2160p, 1080p, 720p, FHD, HEVC, H.265, H265, x265, AV1, BluRay, Blu-ray, WEB-DL, WEBRip, BDRip, REMUX, Dolby Atmos, Atmos, DDP5.1, AAC",
+            "help_text": "Comma-separated and editable. These tokens are used only to form safe searches; the final title comes from a confirmed TMDB record.",
         },
         {
             "id": "advanced_rules_help",
@@ -221,6 +264,13 @@ class Plugin:
             "button_color": "green",
         },
         {
+            "id": "tmdb_cleanup_now",
+            "label": "Run selected TMDB clean-up now",
+            "description": "Clean titles and posters in categories whose TMDB Clean-up switch is enabled.",
+            "button_label": "Clean selected VOD now",
+            "button_color": "green",
+        },
+        {
             "id": "sync_status",
             "label": "Synchronization status",
             "description": "Check watcher health, including disabled, stale, or failed synchronization, and the last result.",
@@ -294,6 +344,7 @@ class Plugin:
         ]
         return (
             [base["category_editor_help"], base["account_names"]]
+            + [base["tmdb_cleanup_help"], base["tmdb_api_key"], base["keep_language_prefix"], base["language_prefix_mappings"], base["removable_title_tags"]]
             + dynamic
             + [base["portable_mapping_json"], base["sync_curated_categories"]]
             + [base[field_id] for field_id in export_ids]
@@ -372,6 +423,22 @@ class Plugin:
                     "default": False,
                     "help_text": "Stops future imports and removes this provider category's existing VOD. Turn it off and refresh VOD to restore available titles.",
                 })
+                prefix, language = category_language(
+                    category.name,
+                    parse_language_aliases(settings.get("language_prefix_mappings", "")),
+                )
+                language_help = (
+                    f"Detected {prefix}| and will request {language} titles/posters."
+                    if language
+                    else "No supported language prefix detected; add it under Language prefix mappings before enabling."
+                )
+                fields.append({
+                    "id": f"category_tmdb_cleanup_{content_type}_{category.pk}",
+                    "label": "TMDB Clean-up",
+                    "type": "boolean",
+                    "default": False,
+                    "help_text": language_help + " Removes provider/actor text from catalog titles and replaces provider artwork with the best-rated localized TMDB poster.",
+                })
         if not fields:
             fields.append({
                 "id": "no_categories_detected",
@@ -442,6 +509,11 @@ class Plugin:
                 return self._reconcile_categories(settings, logger, source="manual", force=True)
             if action == "sync_status":
                 return self._reconcile_status_result()
+            if action == "tmdb_cleanup_now":
+                with self._reconcile_lock() as acquired:
+                    if not acquired:
+                        return {"status": "error", "message": "Synchronization is running. Please retry shortly."}
+                    return self._run_tmdb_cleanup(settings, logger, limit=250)
             if action == "preview_export":
                 return self._run_export(settings, logger, dry_run=True)
             if action == "export_playlist":
@@ -570,8 +642,10 @@ class Plugin:
     ) -> dict[str, Any]:
         mappings = selected_category_mappings(settings)
         hidden = selected_hidden_categories(settings)
+        tmdb_selected = selected_tmdb_cleanup_categories(settings)
         mapping_count = sum(len(group) for group in mappings.values())
         hidden_count = sum(len(group) for group in hidden.values())
+        tmdb_count = sum(len(group) for group in tmdb_selected.values())
 
         logger = logger or logging.getLogger("dispatcharr.plugins.tidyvod")
         with self._reconcile_lock() as acquired:
@@ -596,6 +670,7 @@ class Plugin:
                 "started_at": started_at,
                 "mapped_categories": mapping_count,
                 "hidden_categories": hidden_count,
+                "tmdb_categories": tmdb_count,
             })
             try:
                 result = self._perform_category_reconciliation(settings, mappings, logger)
@@ -608,6 +683,7 @@ class Plugin:
                     "completed_epoch": time.time(),
                     "mapped_categories": mapping_count,
                     "hidden_categories": hidden_count,
+                    "tmdb_categories": tmdb_count,
                     "changes": result.get("changes", {}),
                 }
                 self._atomic_json_write(self._reconcile_status_path(), status)
@@ -622,6 +698,7 @@ class Plugin:
                     "completed_epoch": time.time(),
                     "mapped_categories": mapping_count,
                     "hidden_categories": hidden_count,
+                    "tmdb_categories": tmdb_count,
                     "error": str(exc),
                 })
                 raise
@@ -726,6 +803,7 @@ class Plugin:
                         batch_size=1000,
                     )
 
+        tmdb_result = self._run_tmdb_cleanup(settings, logger, limit=25)
         export_result = None
         if (counts["categories"] or counts["hidden_assignments"]) and bool(settings.get("auto_export", False)):
             export_result = self._run_export(settings, logger, dry_run=False)
@@ -743,6 +821,7 @@ class Plugin:
         }
         if export_result is not None:
             result["export"] = export_result
+        result["tmdb_cleanup"] = tmdb_result
         return result
 
     def _apply_hidden_categories(self, settings, logger, *, dry_run, entries=None):
@@ -870,7 +949,8 @@ class Plugin:
             return {"status": "ok", "health": "disabled", "synchronization": status,
                     "message": "Automatic synchronization is disabled. Enable tidyVOD and Keep curated categories synchronized to protect your categories."}
         if not (any(selected_category_mappings(config.settings or {}).values())
-                or any(selected_hidden_categories(config.settings or {}).values())):
+                or any(selected_hidden_categories(config.settings or {}).values())
+                or any(selected_tmdb_cleanup_categories(config.settings or {}).values())):
             return {"status": "ok", "health": "idle", "synchronization": status,
                     "message": "No category mappings are saved; nothing to synchronize."}
         if not status:
@@ -1200,6 +1280,7 @@ class Plugin:
         selected: dict[tuple[str, int], dict[str, Any]] = {}
         override_pattern = re.compile(r"^category_override_(movie|series)_(\d+)$")
         hidden_pattern = re.compile(r"^category_hidden_(movie|series)_(\d+)$")
+        tmdb_pattern = re.compile(r"^category_tmdb_cleanup_(movie|series)_(\d+)$")
         for key, value in settings.items():
             match = override_pattern.fullmatch(str(key))
             if match:
@@ -1210,8 +1291,13 @@ class Plugin:
             if match:
                 content_type, category_id = match.group(1), int(match.group(2))
                 selected.setdefault((content_type, category_id), {})["hidden"] = bool(value)
+                continue
+            match = tmdb_pattern.fullmatch(str(key))
+            if match:
+                content_type, category_id = match.group(1), int(match.group(2))
+                selected.setdefault((content_type, category_id), {})["tmdb_cleanup"] = bool(value)
         selected = {key: values for key, values in selected.items()
-                    if values.get("clean_name") or values.get("hidden")}
+                    if values.get("clean_name") or values.get("hidden") or values.get("tmdb_cleanup")}
         category_ids = [category_id for _, category_id in selected]
         categories = {
             category.pk: category
@@ -1235,6 +1321,7 @@ class Plugin:
                 "provider_name": category.name if category else previous_names.get((content_type, category_id)),
                 "clean_name": values.get("clean_name", ""),
                 "hidden": bool(values.get("hidden", False)),
+                "tmdb_cleanup": bool(values.get("tmdb_cleanup", False)),
             })
         return sorted(
             entries,
@@ -1383,13 +1470,16 @@ class Plugin:
                 category = by_name.get((content_type, str(entry["provider_name"]).casefold()))
             clean_name = str(entry.get("clean_name") or "").strip()
             hidden = bool(entry.get("hidden", False))
-            if category is None or (not clean_name and not hidden):
+            tmdb_cleanup = bool(entry.get("tmdb_cleanup", False))
+            if category is None or (not clean_name and not hidden and not tmdb_cleanup):
                 missing += 1
                 continue
             if clean_name:
                 restored[f"category_override_{content_type}_{category.pk}"] = clean_name
             if hidden:
                 restored[f"category_hidden_{content_type}_{category.pk}"] = True
+            if tmdb_cleanup:
+                restored[f"category_tmdb_cleanup_{content_type}_{category.pk}"] = True
             restored_categories.add((content_type, category.pk))
 
         with transaction.atomic():
@@ -1399,7 +1489,7 @@ class Plugin:
             updated_settings = {
                 key: value
                 for key, value in (config.settings or {}).items()
-                if not str(key).startswith(("category_override_", "category_hidden_"))
+                if not str(key).startswith(("category_override_", "category_hidden_", "category_tmdb_cleanup_"))
             }
             updated_settings.update(restored)
             config.settings = updated_settings
@@ -1414,6 +1504,287 @@ class Plugin:
                 f"Restored {len(restored_categories)} category choices from the {source} backup; "
                 f"{missing} unavailable categories were skipped. "
                 "Reload the Plugins page now to show the restored fields."
+            ),
+        }
+
+    @staticmethod
+    def _relation_provider_title(relation: Any, item: Any) -> str:
+        props = relation.custom_properties or {}
+        for container_name in ("basic_data", "detailed_info"):
+            container = props.get(container_name, {}) if isinstance(props, dict) else {}
+            if isinstance(container, dict):
+                for key in ("name", "title", "original_name"):
+                    value = str(container.get(key) or "").strip()
+                    if value:
+                        return value
+        item_props = item.custom_properties or {}
+        marker = item_props.get(MARKER, {}) if isinstance(item_props, dict) else {}
+        return str(marker.get("original_name") or item.name or "").strip()
+
+    @staticmethod
+    def _best_tmdb_poster(posters: list[dict[str, Any]], language: str) -> dict[str, Any] | None:
+        """Prefer localized, well-voted posters; never select untagged/textless art."""
+        language = language.split("-", 1)[0].lower()
+        usable = [
+            poster for poster in posters
+            if poster.get("file_path") and str(poster.get("iso_639_1") or "").lower() in {language, "en"}
+        ]
+        if not usable:
+            return None
+        return max(
+            usable,
+            key=lambda poster: (
+                str(poster.get("iso_639_1") or "").lower() == language,
+                int(poster.get("vote_count") or 0),
+                float(poster.get("vote_average") or 0),
+                int(poster.get("width") or 0) * int(poster.get("height") or 0),
+            ),
+        )
+
+    def _run_tmdb_cleanup(
+        self, settings: dict[str, Any], logger: Any, *, limit: int
+    ) -> dict[str, Any]:
+        """Conservatively normalize titles and artwork for opted-in source categories."""
+        from urllib.error import HTTPError, URLError
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+
+        logger = logger or logging.getLogger("dispatcharr.plugins.tidyvod")
+        selected = selected_tmdb_cleanup_categories(settings)
+        total_selected = sum(len(values) for values in selected.values())
+        if not total_selected:
+            return {"status": "ok", "changes": {}, "message": "No categories have TMDB Clean-up enabled."}
+        api_key = str(settings.get("tmdb_api_key", "") or os.environ.get("TMDB_API_KEY", "")).strip()
+        if not api_key:
+            return {
+                "status": "error",
+                "changes": {},
+                "message": "TMDB Clean-up is selected, but no TMDB API key is configured.",
+            }
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, VODLogo
+
+        aliases = parse_language_aliases(settings.get("language_prefix_mappings", ""))
+        removable = parse_cleanup_tokens(settings.get("removable_title_tags", ""))
+        keep_prefix = bool(settings.get("keep_language_prefix", True))
+        entries = self._mapping_entries(settings)
+        names = {
+            kind: {
+                entry.get("provider_name") for entry in entries
+                if entry["content_type"] == kind
+                and entry.get("tmdb_cleanup")
+                and entry.get("provider_name")
+            }
+            for kind in ("movie", "series")
+        }
+        account_filter = self._account_filter(settings)
+        candidates: dict[tuple[str, int], dict[str, Any]] = {}
+        conflicts: set[tuple[str, int]] = set()
+        counts = Counter(selected_categories=total_selected)
+
+        for kind, relation_model, item_field in (
+            ("movie", M3UMovieRelation, "movie"),
+            ("series", M3USeriesRelation, "series"),
+        ):
+            ids = selected[kind]
+            source_names = names[kind]
+            query = Q(category_id__in=ids) | Q(
+                **{f"custom_properties__{MARKER}__original_category_id__in": ids}
+            )
+            if source_names:
+                query |= Q(**{
+                    f"custom_properties__{MARKER}__original_category_name__in": source_names
+                })
+            relations = relation_model.objects.filter(query, **account_filter).select_related(
+                "category", item_field, f"{item_field}__logo"
+            )
+            for relation in relations.iterator(chunk_size=500):
+                props = relation.custom_properties or {}
+                marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
+                source_id = marker.get("original_category_id") or relation.category_id
+                source_name = marker.get("original_category_name") or (
+                    relation.category.name if relation.category else ""
+                )
+                if source_id not in ids and source_name not in source_names:
+                    continue
+                prefix, language = category_language(source_name, aliases)
+                if not language:
+                    counts["missing_language_prefix"] += 1
+                    continue
+                item = getattr(relation, item_field)
+                key = (kind, item.pk)
+                previous = candidates.get(key)
+                if previous and previous["language"].split("-", 1)[0] != language.split("-", 1)[0]:
+                    conflicts.add(key)
+                    candidates.pop(key, None)
+                    continue
+                if key not in conflicts:
+                    candidates[key] = {
+                        "kind": kind,
+                        "media_type": "movie" if kind == "movie" else "tv",
+                        "item": item,
+                        "prefix": prefix,
+                        "language": language,
+                        "provider_title": self._relation_provider_title(relation, item),
+                    }
+
+        counts["language_conflicts"] = len(conflicts)
+        pending = []
+        for candidate in candidates.values():
+            item = candidate["item"]
+            props = item.custom_properties or {}
+            marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
+            current_logo = getattr(getattr(item, "logo", None), "url", None)
+            if (
+                marker.get("tmdb_cleanup_managed")
+                and marker.get("tmdb_cleanup_language") == candidate["language"]
+                and marker.get("tmdb_cleanup_keep_prefix") == keep_prefix
+                and marker.get("tmdb_cleanup_name") == item.name
+                and marker.get("tmdb_cleanup_poster_url") == current_logo
+            ):
+                counts["already_clean"] += 1
+                continue
+            if len(pending) < limit:
+                pending.append(candidate)
+            else:
+                counts["remaining"] += 1
+
+        def get_json(path: str, params: dict[str, Any]) -> dict[str, Any]:
+            url = f"https://api.themoviedb.org/3/{path}?{urlencode(params)}"
+            request = Request(url, headers={"Accept": "application/json", "User-Agent": "tidyVOD/0.8"})
+            try:
+                with urlopen(request, timeout=12) as response:
+                    value = json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                if exc.code == 401:
+                    raise PermissionError("TMDB rejected the API key") from exc
+                raise OSError(f"TMDB returned HTTP {exc.code}") from exc
+            except (URLError, TimeoutError) as exc:
+                raise OSError(f"TMDB request failed: {exc}") from exc
+            if not isinstance(value, dict):
+                raise ValueError("TMDB returned an invalid response")
+            return value
+
+        def fetch(candidate: dict[str, Any]) -> dict[str, Any]:
+            item = candidate["item"]
+            media_type = candidate["media_type"]
+            language = candidate["language"]
+            language_code = language.split("-", 1)[0]
+            tmdb_id = str(item.tmdb_id or "").strip()
+            try:
+                if not tmdb_id and item.imdb_id:
+                    payload = get_json(
+                        f"find/{item.imdb_id}",
+                        {"api_key": api_key, "external_source": "imdb_id", "language": language},
+                    )
+                    key = "movie_results" if media_type == "movie" else "tv_results"
+                    matches = payload.get(key) or []
+                    if len(matches) == 1:
+                        tmdb_id = str(matches[0].get("id") or "")
+                if not tmdb_id:
+                    query_title, parsed_year = normalize_match_title(candidate["provider_title"], removable)
+                    year = item.year or parsed_year
+                    if not query_title or not year:
+                        return {"status": "unmatched"}
+                    params = {"api_key": api_key, "query": query_title, "language": language}
+                    params["primary_release_year" if media_type == "movie" else "first_air_date_year"] = year
+                    matches = get_json(f"search/{media_type}", params).get("results") or []
+                    exact = []
+                    searched = comparable_title(query_title)
+                    for match in matches:
+                        date = str(match.get("release_date") if media_type == "movie" else match.get("first_air_date") or "")
+                        if not date.startswith(str(year)):
+                            continue
+                        titles = (
+                            (match.get("title"), match.get("original_title"))
+                            if media_type == "movie"
+                            else (match.get("name"), match.get("original_name"))
+                        )
+                        if searched in {comparable_title(str(value or "")) for value in titles}:
+                            exact.append(match)
+                    if len(exact) != 1:
+                        return {"status": "ambiguous" if exact or matches else "unmatched"}
+                    tmdb_id = str(exact[0].get("id") or "")
+                detail = get_json(
+                    f"{media_type}/{tmdb_id}",
+                    {
+                        "api_key": api_key,
+                        "language": language,
+                        "append_to_response": "images",
+                        "include_image_language": f"{language_code},en",
+                    },
+                )
+                title = detail.get("title") if media_type == "movie" else detail.get("name")
+                date = detail.get("release_date") if media_type == "movie" else detail.get("first_air_date")
+                try:
+                    year = int(str(date)[:4])
+                except (TypeError, ValueError):
+                    year = item.year
+                poster = self._best_tmdb_poster((detail.get("images") or {}).get("posters") or [], language)
+                if not title or not poster:
+                    return {"status": "no_clean_poster"}
+                return {
+                    "status": "ok",
+                    "tmdb_id": tmdb_id,
+                    "name": formatted_tmdb_title(str(title), year, candidate["prefix"], keep_prefix),
+                    "poster_url": f"https://image.tmdb.org/t/p/w780{poster['file_path']}",
+                    "poster_language": poster.get("iso_639_1"),
+                }
+            except PermissionError:
+                return {"status": "unauthorized"}
+            except (OSError, ValueError, TypeError) as exc:
+                logger.warning("TMDB cleanup failed for %s: %s", item.pk, exc)
+                return {"status": "request_error"}
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(fetch, pending))
+        if any(result.get("status") == "unauthorized" for result in results):
+            return {"status": "error", "changes": dict(counts), "message": "TMDB rejected the configured API key."}
+
+        with transaction.atomic():
+            for candidate, result in zip(pending, results):
+                status = result.get("status", "request_error")
+                if status != "ok":
+                    counts[status] += 1
+                    continue
+                item = candidate["item"]
+                logo, _ = VODLogo.objects.get_or_create(
+                    url=result["poster_url"],
+                    defaults={"name": f"tidyVOD TMDB - {result['name']}"[:255]},
+                )
+                item.refresh_from_db(fields=["name", "logo", "custom_properties"])
+                props = dict(item.custom_properties or {})
+                existing = props.get(MARKER, {})
+                marker = dict(existing) if isinstance(existing, dict) else {}
+                marker.setdefault("original_name", item.name)
+                marker.setdefault("original_logo_id", item.logo_id)
+                marker.update({
+                    "tmdb_cleanup_managed": True,
+                    "tmdb_cleanup_tmdb_id": result["tmdb_id"],
+                    "tmdb_cleanup_language": candidate["language"],
+                    "tmdb_cleanup_poster_language": result["poster_language"],
+                    "tmdb_cleanup_keep_prefix": keep_prefix,
+                    "tmdb_cleanup_name": result["name"],
+                    "tmdb_cleanup_poster_url": result["poster_url"],
+                })
+                props[MARKER] = marker
+                item.name = result["name"]
+                item.logo = logo
+                item.custom_properties = props
+                try:
+                    with transaction.atomic():
+                        item.save(update_fields=["name", "logo", "custom_properties", "updated_at"])
+                except IntegrityError:
+                    counts["save_conflicts"] += 1
+                    continue
+                counts["cleaned"] += 1
+
+        return {
+            "status": "ok",
+            "changes": dict(counts),
+            "message": (
+                f"TMDB cleaned {counts['cleaned']} titles/posters; {counts['already_clean']} were already clean, "
+                f"{counts['ambiguous'] + counts['unmatched']} uncertain matches were left unchanged, "
+                f"and {counts['remaining']} remain for a later pass."
             ),
         }
 
@@ -1576,7 +1947,8 @@ class Plugin:
                             item.name = marker["original_name"]
                             fields.append("name")
                             counts["titles"] += 1
-                    if marker.get("poster_managed") or marker.get("clean_cover_managed"):
+                    if (marker.get("poster_managed") or marker.get("clean_cover_managed")
+                            or marker.get("tmdb_cleanup_managed")):
                         item.logo = VODLogo.objects.filter(pk=marker.get("original_logo_id")).first()
                         fields.append("logo")
                         counts["covers"] += 1

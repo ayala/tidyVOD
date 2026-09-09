@@ -293,11 +293,13 @@ class ReconciliationTests(unittest.TestCase):
                 "movie_category_heading",
                 "category_override_movie_12",
                 "category_hidden_movie_12",
+                "category_tmdb_cleanup_movie_12",
                 "movie_series_section_gap_1",
                 "movie_series_section_gap_2",
                 "series_category_heading",
                 "category_override_series_22",
                 "category_hidden_series_22",
+                "category_tmdb_cleanup_series_22",
             ],
         )
         spacers = [field for field in fields if field["id"].startswith("movie_series_section_gap_")]
@@ -306,11 +308,26 @@ class ReconciliationTests(unittest.TestCase):
         hide = next(field for field in fields if field["id"] == "category_hidden_movie_12")
         self.assertEqual(hide["label"], "Hide this category")
         self.assertFalse(hide["default"])
+        cleanup = next(field for field in fields if field["id"] == "category_tmdb_cleanup_movie_12")
+        self.assertEqual(cleanup["label"], "TMDB Clean-up")
+        self.assertIn("No supported language prefix", cleanup["help_text"])
         movie = next(field for field in fields if field["id"] == "category_override_movie_12")
         self.assertEqual(
             movie["help_text"],
             "10 movies • 0 in original category → 10 moved by tidyVOD • Provider",
         )
+
+    def test_tmdb_poster_prefers_requested_language_and_never_textless(self):
+        posters = [
+            {"file_path": "/textless.jpg", "iso_639_1": None, "vote_count": 100},
+            {"file_path": "/english.jpg", "iso_639_1": "en", "vote_count": 50},
+            {"file_path": "/spanish.jpg", "iso_639_1": "es", "vote_count": 2},
+        ]
+        selected = self.module.Plugin._best_tmdb_poster(posters, "es-ES")
+        self.assertEqual(selected["file_path"], "/spanish.jpg")
+        self.assertIsNone(self.module.Plugin._best_tmdb_poster([
+            {"file_path": "/textless.jpg", "iso_639_1": None, "vote_count": 100},
+        ], "es"))
 
 
 if __name__ == "__main__":

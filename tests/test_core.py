@@ -5,11 +5,17 @@ from core import (
     category_override,
     category_target,
     clean_title,
+    category_language,
     compile_category_rules,
     compile_title_rules,
     parse_account_names,
+    parse_cleanup_tokens,
+    parse_language_aliases,
+    normalize_match_title,
+    formatted_tmdb_title,
     selected_category_mappings,
     selected_hidden_categories,
+    selected_tmdb_cleanup_categories,
 )
 
 
@@ -80,6 +86,34 @@ class RulesTests(unittest.TestCase):
         }
         self.assertEqual(selected_hidden_categories(settings), {"movie": {12}, "series": set()})
         self.assertEqual(selected_category_mappings(settings), {"movie": {}, "series": {}})
+
+    def test_tmdb_cleanup_categories_are_explicit(self):
+        settings = {
+            "category_tmdb_cleanup_movie_12": True,
+            "category_tmdb_cleanup_movie_13": False,
+            "category_tmdb_cleanup_series_22": True,
+        }
+        self.assertEqual(
+            selected_tmdb_cleanup_categories(settings),
+            {"movie": {12}, "series": {22}},
+        )
+
+    def test_language_prefix_and_editable_aliases(self):
+        aliases = parse_language_aliases("ESP=es, EN=en-GB")
+        self.assertEqual(category_language("ESP| Peliculas 4K", aliases), ("ESP", "es"))
+        self.assertEqual(category_language("EN| Movies", aliases), ("EN", "en-gb"))
+        self.assertEqual(category_language("Movies", aliases), (None, None))
+
+    def test_provider_title_normalization_is_conservative(self):
+        tokens = parse_cleanup_tokens("4K, HDR, Blu-ray")
+        self.assertEqual(
+            normalize_match_title("ES| A Man Called Otto (2022) HDR • 4K", tokens),
+            ("A Man Called Otto", 2022),
+        )
+        self.assertEqual(
+            formatted_tmdb_title("El peor vecino del mundo", 2022, "ES", True),
+            "ES| El peor vecino del mundo (2022)",
+        )
 
 if __name__ == "__main__":
     unittest.main()

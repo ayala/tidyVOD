@@ -215,10 +215,12 @@ class RecoveryTests(unittest.TestCase):
 
     def test_backup_restore_preserves_clean_name_and_hidden_choice(self):
         self.settings[f"category_hidden_movie_{self.source.pk}"] = True
+        self.settings[f"category_tmdb_cleanup_movie_{self.source.pk}"] = True
         payload = self.plugin._backup_mappings(self.settings, reason="test")
         config = Mock(settings={
             f"category_override_movie_{self.source.pk}": "Changed",
             f"category_hidden_movie_{self.source.pk}": False,
+            f"category_tmdb_cleanup_movie_{self.source.pk}": False,
         })
         self.plugin._plugin_config = Mock(return_value=config)
         result = self.plugin._restore_mapping_payload(
@@ -227,6 +229,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result["restored_mappings"], 1)
         self.assertEqual(config.settings[f"category_override_movie_{self.source.pk}"], "Netflix")
         self.assertTrue(config.settings[f"category_hidden_movie_{self.source.pk}"])
+        self.assertTrue(config.settings[f"category_tmdb_cleanup_movie_{self.source.pk}"])
 
     def test_hide_preview_does_not_change_database(self):
         relation = self.relation(self.source)
