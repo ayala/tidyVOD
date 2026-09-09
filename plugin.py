@@ -65,7 +65,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.10"
+    version = "0.8.11"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -527,23 +527,14 @@ class Plugin:
                     "label": "Hide this category",
                     "type": "boolean",
                     "default": False,
-                    "help_text": "Stops future imports and removes this provider category's existing VOD. Turn it off and refresh VOD to restore available titles.",
+                    "help_text": "Turn ON to remove category. Turn OFF and refresh VOD to restore available titles.",
                 })
-                prefix, language = category_language(
-                    category.name,
-                    parse_language_aliases(settings.get("language_prefix_mappings", "")),
-                )
-                language_help = (
-                    f"Detected {prefix}| and will request {language} poster artwork."
-                    if language
-                    else "No supported language prefix detected; English poster artwork will be requested."
-                )
                 fields.append({
                     "id": f"category_tmdb_cleanup_{content_type}_{category.pk}",
                     "label": "TMDB Artwork",
                     "type": "boolean",
                     "default": content_type == "movie",
-                    "help_text": language_help + " Replaces poster artwork only; official TMDB title normalization runs automatically whether this is on or off.",
+                    "help_text": "Replace VOD provided artwork.",
                 })
         if not fields:
             fields.append({

@@ -381,8 +381,11 @@ class ReconciliationTests(unittest.TestCase):
         cleanup = next(field for field in fields if field["id"] == "category_tmdb_cleanup_movie_12")
         self.assertEqual(cleanup["label"], "TMDB Artwork")
         self.assertTrue(cleanup["default"])
-        self.assertIn("English poster artwork", cleanup["help_text"])
-        self.assertIn("title normalization runs automatically", cleanup["help_text"])
+        self.assertEqual(cleanup["help_text"], "Replace VOD provided artwork.")
+        self.assertEqual(
+            hide["help_text"],
+            "Turn ON to remove category. Turn OFF and refresh VOD to restore available titles.",
+        )
         movie = next(field for field in fields if field["id"] == "category_override_movie_12")
         self.assertEqual(
             movie["help_text"],
