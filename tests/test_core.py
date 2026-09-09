@@ -11,6 +11,7 @@ from core import (
     parse_account_names,
     parse_cleanup_tokens,
     parse_language_aliases,
+    provider_title_language,
     normalize_match_title,
     formatted_tmdb_title,
     match_title_candidates,
@@ -104,6 +105,10 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(category_language("ESP| Peliculas 4K", aliases), ("ESP", "es"))
         self.assertEqual(category_language("EN| Movies", aliases), ("EN", "en-gb"))
         self.assertEqual(category_language("Movies", aliases), (None, None))
+        self.assertEqual(provider_title_language("EN - Blade 4K (1998)", aliases), ("EN", "en-gb"))
+        self.assertEqual(provider_title_language("[ESP] Blade (1998)", aliases), ("ESP", "es"))
+        self.assertEqual(provider_title_language("|EN| Blade (1998)", aliases), ("EN", "en-gb"))
+        self.assertEqual(provider_title_language("ESP • Blade (1998)", aliases), ("ESP", "es"))
 
     def test_provider_title_normalization_is_conservative(self):
         tokens = parse_cleanup_tokens("4K, HDR, Blu-ray")

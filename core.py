@@ -13,11 +13,14 @@ CATEGORY_OVERRIDE_PATTERN = re.compile(r"^category_override_(movie|series)_(\d+)
 CATEGORY_HIDDEN_PATTERN = re.compile(r"^category_hidden_(movie|series)_(\d+)$")
 CATEGORY_TMDB_PATTERN = re.compile(r"^category_tmdb_cleanup_(movie|series)_(\d+)$")
 LANGUAGE_PREFIX_PATTERN = re.compile(
-    r"^\s*([A-Za-z]{2,3})(?:[-_]([A-Za-z]{2}))?\s*[|:]\s*"
+    r"^\s*(?:"
+    r"[\[(]\s*([A-Za-z]{2,3})(?:[-_]([A-Za-z]{2}))?\s*[\])]\s*"
+    r"|"
+    r"\|?\s*([A-Za-z]{2,3})(?:[-_]([A-Za-z]{2}))?\s*"
+    r"(?:[|:/•·]|[-–—]\s+)\s*"
+    r")"
 )
-PROVIDER_TITLE_LANGUAGE_PATTERN = re.compile(
-    r"^\s*[A-Za-z]{2,3}(?:[-_][A-Za-z]{2})?\s*(?:[|:]|[-–—]\s+)\s*"
-)
+PROVIDER_TITLE_LANGUAGE_PATTERN = LANGUAGE_PREFIX_PATTERN
 DEFAULT_LANGUAGE_ALIASES = {
     "AR": "ar", "DE": "de", "EN": "en", "ENG": "en", "ES": "es",
     "FR": "fr", "FRE": "fr", "IT": "it", "JA": "ja", "JP": "ja",
@@ -211,8 +214,21 @@ def category_language(name: str, aliases: dict[str, str]) -> tuple[str | None, s
     match = LANGUAGE_PREFIX_PATTERN.match(name or "")
     if not match:
         return None, None
-    prefix = match.group(1).upper()
-    region = match.group(2)
+    prefix = (match.group(1) or match.group(3)).upper()
+    region = match.group(2) or match.group(4)
+    language = aliases.get(prefix)
+    if language and region and "-" not in language:
+        language = f"{language}-{region.upper()}"
+    return prefix, language
+
+
+def provider_title_language(name: str, aliases: dict[str, str]) -> tuple[str | None, str | None]:
+    """Read a language prefix from a provider title as a secondary hint."""
+    match = PROVIDER_TITLE_LANGUAGE_PATTERN.match(name or "")
+    if not match:
+        return None, None
+    prefix = (match.group(1) or match.group(3)).upper()
+    region = match.group(2) or match.group(4)
     language = aliases.get(prefix)
     if language and region and "-" not in language:
         language = f"{language}-{region.upper()}"

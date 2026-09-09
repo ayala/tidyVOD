@@ -294,12 +294,14 @@ class ReconciliationTests(unittest.TestCase):
                 "category_override_movie_12",
                 "category_hidden_movie_12",
                 "category_tmdb_cleanup_movie_12",
+                "category_tmdb_language_movie_12",
                 "movie_series_section_gap_1",
                 "movie_series_section_gap_2",
                 "series_category_heading",
                 "category_override_series_22",
                 "category_hidden_series_22",
                 "category_tmdb_cleanup_series_22",
+                "category_tmdb_language_series_22",
             ],
         )
         spacers = [field for field in fields if field["id"].startswith("movie_series_section_gap_")]

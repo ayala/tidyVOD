@@ -1,6 +1,6 @@
 {
   "name": "tidyVOD",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
   "author": "ayala",
   "license": "MIT",

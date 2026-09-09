@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.2/tidyvod-v0.8.2.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.3/tidyvod-v0.8.3.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -50,7 +50,7 @@ Hidden categories remain visible in tidyVOD settings. **Preview** reports what w
 
 Enable **TMDB Clean-up** only beneath the source categories that should be managed. A prefix such as `ES|`, `EN|`, `FR|`, or `IT|` selects the localized TMDB title and poster. Prefix mappings are editable under **Language prefix mappings**. By default the visible result retains that identity, for example `ES| El peor vecino del mundo (2022)`; turn off **Keep language prefix in cleaned titles** only if the category name alone is enough to distinguish languages.
 
-Matching is deliberately conservative: an existing TMDB ID is preferred, then an IMDb ID, then one exact normalized title-and-year result. Missing years, ambiguous results, unknown language prefixes, and shared titles selected by conflicting language categories are left unchanged. The final title comes from the confirmed TMDB record, so actor names and provider-added wording disappear. **Remove these provider title tags** is an editable comma-separated list used to form searches; remove a token from that list if it is meaningful for your provider.
+Matching is deliberately conservative: an existing TMDB ID is preferred, then an IMDb ID, then one exact normalized title-and-year result. The category prefix is authoritative; when it is absent, a provider title prefix such as `EN -` is accepted as a fallback. For categories whose prefix was already removed, enter `en`, `es`, `fr`, etc. in that row's optional **TMDB language override**. Missing years, ambiguous results, unknown language prefixes, and shared titles selected by conflicting language categories are left unchanged. The final title comes from the confirmed TMDB record, so actor names and provider-added wording disappear. **Remove these provider title tags** is an editable comma-separated list used to form searches; remove a token from that list if it is meaningful for your provider.
 
 Artwork selection accepts only posters tagged with the category language or English, never untagged/textless artwork. The requested language wins, followed by the highest-voted English poster. This avoids provider-generated `4K`, `HDR`, codec, audio, and source overlays in normal cases. TMDB does not expose a machine-readable “contains a 4K badge” flag, so no plugin can absolutely certify the pixels without an OCR/image-analysis dependency; a rare incorrectly uploaded TMDB poster may still require manual correction.
 
@@ -128,6 +128,14 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 
 - Remove configured tags regardless of whether they appear before or after the year.
 - Recognize provider title prefixes written as `EN|`, `EN:`, `EN -`, or with an en/em dash.
+
+### 0.8.3 synchronization results
+
+- Replace the misleading `Repaired 0` wording when categories are already correct.
+- Include TMDB cleaned, already-clean, uncertain, missing-key, and remaining results in Synchronize and Show status messages.
+- Prefer a category language prefix but fall back to a recognized prefix on each provider title.
+- Add a backed-up per-category language override for categories whose original prefix was already removed.
+- Report missing language prefixes, shared-language conflicts, missing posters, and request errors instead of presenting unexplained zeros.
 
 Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
 

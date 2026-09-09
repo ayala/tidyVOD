@@ -32,6 +32,7 @@ from .core import (
     normalize_match_title,
     parse_cleanup_tokens,
     parse_language_aliases,
+    provider_title_language,
     safe_filename,
     category_override,
     category_target,
@@ -63,7 +64,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.2"
+    version = "0.8.3"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -440,6 +441,14 @@ class Plugin:
                     "default": False,
                     "help_text": language_help + " Removes provider/actor text from catalog titles and replaces provider artwork with the best-rated localized TMDB poster.",
                 })
+                fields.append({
+                    "id": f"category_tmdb_language_{content_type}_{category.pk}",
+                    "label": "TMDB language override (optional)",
+                    "type": "string",
+                    "default": "",
+                    "placeholder": "Auto, or enter en / es / fr / it…",
+                    "help_text": "Use this only when tidyVOD already removed the source prefix and the provider title has no usable language prefix.",
+                })
         if not fields:
             fields.append({
                 "id": "no_categories_detected",
@@ -686,6 +695,7 @@ class Plugin:
                     "hidden_categories": hidden_count,
                     "tmdb_categories": tmdb_count,
                     "changes": result.get("changes", {}),
+                    "tmdb_cleanup": result.get("tmdb_cleanup", {}),
                 }
                 self._atomic_json_write(self._reconcile_status_path(), status)
                 result["last_run"] = completed_at
@@ -809,16 +819,22 @@ class Plugin:
         if (counts["categories"] or counts["hidden_assignments"]) and bool(settings.get("auto_export", False)):
             export_result = self._run_export(settings, logger, dry_run=False)
         logger.info("tidyVOD synchronized newly imported VOD: %s", dict(counts))
-        result = {
-            "status": "ok",
-            "changes": dict(counts),
-            "samples": samples,
-            "message": (
+        if counts["categories"] or counts["hidden_categories"] or counts["hidden_assignments"]:
+            category_message = (
                 f"Repaired {counts['categories']} category assignments "
                 f"({counts['movie']} movies, {counts['series']} series); "
                 f"hid {counts['hidden_categories']} categories and removed "
                 f"{counts['hidden_assignments']} hidden assignments."
-            ),
+            )
+        else:
+            category_message = "No category assignments needed repair."
+        if any(selected_tmdb_cleanup_categories(settings).values()):
+            category_message += f" {tmdb_result.get('message', 'TMDB cleanup did not return a result.')}"
+        result = {
+            "status": "ok",
+            "changes": dict(counts),
+            "samples": samples,
+            "message": category_message,
         }
         if export_result is not None:
             result["export"] = export_result
@@ -983,6 +999,9 @@ class Plugin:
                 f"{changes.get('categories', 0)} assignments moved "
                 f"({changes.get('movie', 0)} movies, {changes.get('series', 0)} series)."
             )
+            tmdb = status.get("tmdb_cleanup") or {}
+            if tmdb.get("message"):
+                message += f" {tmdb['message']}"
         return {"status": "ok", "health": status.get("status", "unknown"), "synchronization": status, "message": message}
 
     def _account_filter(self, settings: dict[str, Any]) -> dict[str, Any]:
@@ -1282,6 +1301,7 @@ class Plugin:
         override_pattern = re.compile(r"^category_override_(movie|series)_(\d+)$")
         hidden_pattern = re.compile(r"^category_hidden_(movie|series)_(\d+)$")
         tmdb_pattern = re.compile(r"^category_tmdb_cleanup_(movie|series)_(\d+)$")
+        tmdb_language_pattern = re.compile(r"^category_tmdb_language_(movie|series)_(\d+)$")
         for key, value in settings.items():
             match = override_pattern.fullmatch(str(key))
             if match:
@@ -1297,8 +1317,13 @@ class Plugin:
             if match:
                 content_type, category_id = match.group(1), int(match.group(2))
                 selected.setdefault((content_type, category_id), {})["tmdb_cleanup"] = bool(value)
+                continue
+            match = tmdb_language_pattern.fullmatch(str(key))
+            if match:
+                content_type, category_id = match.group(1), int(match.group(2))
+                selected.setdefault((content_type, category_id), {})["tmdb_language"] = str(value or "").strip()
         selected = {key: values for key, values in selected.items()
-                    if values.get("clean_name") or values.get("hidden") or values.get("tmdb_cleanup")}
+                    if values.get("clean_name") or values.get("hidden") or values.get("tmdb_cleanup") or values.get("tmdb_language")}
         category_ids = [category_id for _, category_id in selected]
         categories = {
             category.pk: category
@@ -1323,6 +1348,7 @@ class Plugin:
                 "clean_name": values.get("clean_name", ""),
                 "hidden": bool(values.get("hidden", False)),
                 "tmdb_cleanup": bool(values.get("tmdb_cleanup", False)),
+                "tmdb_language": values.get("tmdb_language", ""),
             })
         return sorted(
             entries,
@@ -1472,7 +1498,8 @@ class Plugin:
             clean_name = str(entry.get("clean_name") or "").strip()
             hidden = bool(entry.get("hidden", False))
             tmdb_cleanup = bool(entry.get("tmdb_cleanup", False))
-            if category is None or (not clean_name and not hidden and not tmdb_cleanup):
+            tmdb_language = str(entry.get("tmdb_language") or "").strip()
+            if category is None or (not clean_name and not hidden and not tmdb_cleanup and not tmdb_language):
                 missing += 1
                 continue
             if clean_name:
@@ -1481,6 +1508,8 @@ class Plugin:
                 restored[f"category_hidden_{content_type}_{category.pk}"] = True
             if tmdb_cleanup:
                 restored[f"category_tmdb_cleanup_{content_type}_{category.pk}"] = True
+            if tmdb_language:
+                restored[f"category_tmdb_language_{content_type}_{category.pk}"] = tmdb_language
             restored_categories.add((content_type, category.pk))
 
         with transaction.atomic():
@@ -1490,7 +1519,7 @@ class Plugin:
             updated_settings = {
                 key: value
                 for key, value in (config.settings or {}).items()
-                if not str(key).startswith(("category_override_", "category_hidden_", "category_tmdb_cleanup_"))
+                if not str(key).startswith(("category_override_", "category_hidden_", "category_tmdb_cleanup_", "category_tmdb_language_"))
             }
             updated_settings.update(restored)
             config.settings = updated_settings
@@ -1577,6 +1606,13 @@ class Plugin:
             }
             for kind in ("movie", "series")
         }
+        saved_language_by_source = {
+            kind: {
+                (entry.get("category_id"), entry.get("provider_name")): str(entry.get("tmdb_language") or "").strip()
+                for entry in entries if entry["content_type"] == kind and entry.get("tmdb_cleanup")
+            }
+            for kind in ("movie", "series")
+        }
         account_filter = self._account_filter(settings)
         candidates: dict[tuple[str, int], dict[str, Any]] = {}
         conflicts: set[tuple[str, int]] = set()
@@ -1607,11 +1643,27 @@ class Plugin:
                 )
                 if source_id not in ids and source_name not in source_names:
                     continue
-                prefix, language = category_language(source_name, aliases)
+                item = getattr(relation, item_field)
+                provider_title = self._relation_provider_title(relation, item)
+                override = str(settings.get(f"category_tmdb_language_{kind}_{source_id}", "") or "").strip()
+                if not override:
+                    override = saved_language_by_source[kind].get((source_id, source_name), "")
+                if override:
+                    prefix = override.upper().split("-", 1)[0]
+                    language = aliases.get(override.upper(), override.lower())
+                    if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2})?", language):
+                        counts["invalid_language_override"] += 1
+                        continue
+                    counts["language_override"] += 1
+                else:
+                    prefix, language = category_language(source_name, aliases)
+                if not language:
+                    prefix, language = provider_title_language(provider_title, aliases)
+                    if language:
+                        counts["title_language_fallback"] += 1
                 if not language:
                     counts["missing_language_prefix"] += 1
                     continue
-                item = getattr(relation, item_field)
                 key = (kind, item.pk)
                 previous = candidates.get(key)
                 if previous and previous["language"].split("-", 1)[0] != language.split("-", 1)[0]:
@@ -1625,7 +1677,7 @@ class Plugin:
                         "item": item,
                         "prefix": prefix,
                         "language": language,
-                        "provider_title": self._relation_provider_title(relation, item),
+                        "provider_title": provider_title,
                     }
 
         counts["language_conflicts"] = len(conflicts)
@@ -1788,9 +1840,14 @@ class Plugin:
             "status": "ok",
             "changes": dict(counts),
             "message": (
-                f"TMDB cleaned {counts['cleaned']} titles/posters; {counts['already_clean']} were already clean, "
-                f"{counts['ambiguous'] + counts['unmatched']} uncertain matches were left unchanged, "
-                f"and {counts['remaining']} remain for a later pass."
+                f"TMDB: {counts['selected_categories']} categories selected; "
+                f"{counts['cleaned']} titles/posters cleaned, {counts['already_clean']} already clean, "
+                f"{counts['ambiguous'] + counts['unmatched']} uncertain, "
+                f"{counts['missing_language_prefix']} missing a recognized category/title language prefix, "
+                f"{counts['invalid_language_override']} invalid language overrides, "
+                f"{counts['language_conflicts']} shared-language conflicts, "
+                f"{counts['no_clean_poster']} without a localized/English poster, "
+                f"{counts['request_error']} request errors, and {counts['remaining']} remaining."
             ),
         }
 
