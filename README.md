@@ -1,6 +1,6 @@
 # tidyVOD for Dispatcharr
 
-tidyVOD is a headless Dispatcharr plugin for renaming and combining provider VOD categories. Its main editor deliberately stays simple: every detected movie and series category gets one optional clean-name field.
+tidyVOD is a headless Dispatcharr plugin for renaming, combining, or hiding provider VOD categories. Every detected movie and series category gets an optional clean-name field and a **Hide this category** switch.
 
 For example, entering `Netflix` beside `Netflix Movies`, `Netflix HEVC`, and `Netflix Kids` combines all three in Dispatcharr's curated Xtream output. Entering `Foreign Horror` beside `FR Thriller`, `IT Horror`, and `ES Horror` creates a separate combined category at the same time. Blank fields keep their original category names.
 
@@ -10,6 +10,7 @@ tidyVOD can also:
 - automatically back up clean category-name mappings and restore them after mistakes or provider rebuilds;
 - preview changes before writing them;
 - continuously place newly imported VOD into your saved curated categories;
+- stop importing selected categories and remove their existing provider assignments;
 - restore category and title values it previously changed;
 - export curated categories as `.m3u` (and optional `.xml` XMLTV stub) for downstream tools like m3u4u in one click.
 
@@ -25,29 +26,31 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.7.2/tidyvod-v0.7.2.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.7.4/tidyvod-v0.7.4.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
 ## Category editor
 
-Each provider category has one field:
+Each provider category has a clean-name field followed by a hide switch:
 
-| Provider category | Clean name |
-| --- | --- |
-| Netflix Movies | Netflix |
-| Netflix HEVC | Netflix |
-| Netflix Kids | Netflix |
-| FR Thriller | Foreign Horror |
-| IT Horror | Foreign Horror |
-| ES Horror | Foreign Horror |
-| Documentaries 4K HEVC | Documentaries |
+| Provider category | Clean name | Hide |
+| --- | --- | --- |
+| Netflix Movies | Netflix | Off |
+| Netflix HEVC | Netflix | Off |
+| Netflix Kids | Netflix | Off |
+| FR Thriller | Foreign Horror | Off |
+| IT Horror | Foreign Horror | Off |
+| ES Horror | Foreign Horror | Off |
+| Unwanted PPV | *(blank)* | On |
 
 Matching clean names combine automatically. Different clean names create different combined lists in the same run.
 
+Hidden categories remain visible in tidyVOD settings. **Preview** reports what would be removed without changing data. **Apply** disables the provider category and removes its existing movie or series assignments; the watcher keeps it disabled after later refreshes. Turning Hide off restores the category's previous enabled state. Run a provider VOD refresh to reimport titles that are still available. If a title also has a relation from another visible category or provider, that copy remains.
+
 ## Category-name backups
 
-**Back up mappings** saves every nonblank clean-name field as a versioned JSON snapshot. Preview and Apply also create an automatic snapshot whenever the mappings have changed. Up to 50 unique snapshots are retained under `/data/plugins/.tidyvod_backups`, outside the replaceable plugin folder and inside Dispatcharr's normal plugin-data backup scope. Existing VOD Cleaner snapshots are copied forward automatically. The manual action reports the JSON file path and fills **Portable category-name backup** after a page reload; copy that JSON into a local `.json` file for an off-server backup.
+**Back up mappings** saves every nonblank clean name and every hidden-category choice as a versioned JSON snapshot. Preview and Apply also create an automatic snapshot whenever these choices change. Up to 50 unique snapshots are retained under `/data/plugins/.tidyvod_backups`, outside the replaceable plugin folder and inside Dispatcharr's normal plugin-data backup scope. Existing VOD Cleaner snapshots are copied forward automatically. The manual action reports the JSON file path and fills **Portable category-name backup** after a page reload; copy that JSON into a local `.json` file for an off-server backup.
 
 **Restore mappings** restores the latest server snapshot into plugin settings. To restore a local copy, paste it into **Portable category-name backup** and press **Import pasted backup**. Snapshots include both the database category ID and provider category name, allowing name-based recovery when a provider refresh recreates categories with different IDs. Reload the Plugins page immediately after restoring so the editor displays the restored values.
 
@@ -59,6 +62,8 @@ Matching clean names combine automatically. Different clean names create differe
 4. Run **Preview**.
 5. Run **Apply**.
 6. Leave **Keep curated categories synchronized** enabled so later provider additions follow the same mappings.
+
+Movie and Series settings are separated by two blank spacer rows for easier scanning.
 
 **Apply runs immediately. You do not need to press Run afterward.** Keep tidyVOD and **Keep curated categories synchronized** enabled. The watcher starts when Dispatcharr loads the enabled plugin, waits 15 seconds for startup, and checks every minute. The M3U event button is an internal notice, not a start-watching button.
 
@@ -75,6 +80,14 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Repair changed/missing assignments and recover recreated source IDs by exact backed-up names.
 - Preserve source names in backups when their original database rows disappear.
 - Show explicit stale/disabled/error status; protect Apply/Restore with the same repair lock.
+
+### 0.7.4 category visibility update
+
+- Add a clear **Hide this category** switch beneath every category.
+- Keep hidden categories available in settings for later restoration.
+- Disable future provider imports and remove existing assignments for hidden categories.
+- Preserve and restore hide choices through automatic and portable backups.
+- Double the visual separation between Movie and Series settings.
 
 Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
 

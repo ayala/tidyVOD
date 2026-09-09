@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-08-31T17:00:48Z",
+  "generated_at": "2026-09-09T10:00:23Z",
   "manifest": {
     "registry_url": "https://github.com/ayala/tidyVOD",
     "registry_name": "tidyVOD Plugin Repo",
@@ -8,15 +8,15 @@
       {
         "slug": "tidyvod",
         "name": "tidyVOD",
-        "description": "Rename, combine, clean titles, and export curated VOD categories with tidy m3u/xmltv output.",
+        "description": "Rename, combine, hide, and export curated VOD categories with automatic category repair.",
         "author": "ayala",
         "license": "MIT",
-        "last_updated": "2026-08-31T17:00:48Z",
-        "latest_version": "0.7.3",
-        "latest_md5": "5b7009368a8448039c250fa04d47a530",
-        "latest_sha256": "a2d4aefdb157edb3b23d78386f9b8bf1de41bae867775808e670b8552d724680",
-        "latest_url": "releases/v0.7.3/tidyvod-v0.7.3.zip",
-        "latest_size": 55,
+        "last_updated": "2026-09-09T10:00:23Z",
+        "latest_version": "0.7.4",
+        "latest_md5": "315e34fbfda5f4409545f0af5ffb1dc2",
+        "latest_sha256": "8705eecfdfd443ee1f81f519bb02440aa996a9c74c1280a91e37be0d22b22a57",
+        "latest_url": "releases/v0.7.4/tidyvod-v0.7.4.zip",
+        "latest_size": 57,
         "min_dispatcharr_version": "v0.24.0",
         "icon_url": "logo.png",
         "repo_url": "https://github.com/ayala/tidyVOD"
@@ -29,15 +29,15 @@
     {
       "slug": "tidyvod",
       "name": "tidyVOD",
-      "description": "Rename, combine, clean titles, and export curated VOD categories with tidy m3u/xmltv output.",
+      "description": "Rename, combine, hide, and export curated VOD categories with automatic category repair.",
       "author": "ayala",
-      "latest_version": "0.7.3",
-      "last_updated": "2026-08-31T17:00:48Z",
+      "latest_version": "0.7.4",
+      "last_updated": "2026-09-09T10:00:23Z",
       "license": "MIT",
       "repo_url": "https://github.com/ayala/tidyVOD",
-      "latest_url": "releases/v0.7.3/tidyvod-v0.7.3.zip",
-      "latest_sha256": "a2d4aefdb157edb3b23d78386f9b8bf1de41bae867775808e670b8552d724680",
-      "latest_size": 55,
+      "latest_url": "releases/v0.7.4/tidyvod-v0.7.4.zip",
+      "latest_sha256": "8705eecfdfd443ee1f81f519bb02440aa996a9c74c1280a91e37be0d22b22a57",
+      "latest_size": 57,
       "icon_url": "logo.png",
       "min_dispatcharr_version": "v0.24.0"
     }

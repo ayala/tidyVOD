@@ -32,6 +32,7 @@ from .core import (
     compile_title_rules,
     parse_account_names,
     selected_category_mappings,
+    selected_hidden_categories,
 )
 
 
@@ -53,7 +54,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.7.3"
+    version = "0.7.4"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -63,7 +64,7 @@ class Plugin:
             "id": "category_editor_help",
             "label": "Category editor",
             "type": "info",
-            "value": "Enter a clean name beside any provider category. Give several categories the same clean name to combine them. Leave a field blank to keep the original name.",
+            "value": "Enter a clean name beside any provider category, or use Hide this category to stop importing it and remove its existing VOD. Hidden categories remain here so they can be restored.",
         },
         {
             "id": "account_names",
@@ -184,7 +185,7 @@ class Plugin:
             "description": "Apply configured category and title rules.",
             "button_label": "Apply",
             "button_color": "green",
-            "confirm": {"title": "Apply VOD changes?", "message": "A restore marker will be saved before each change."},
+            "confirm": {"title": "Apply VOD changes?", "message": "A backup is saved first. Hidden categories will be disabled and their existing provider assignments removed."},
         },
         {
             "id": "restore",
@@ -276,7 +277,8 @@ class Plugin:
         """Add one direct clean-name field per detected provider category."""
         base = {field["id"]: field for field in self.BASE_FIELDS}
         try:
-            dynamic = self._category_editor_fields()
+            config = self._plugin_config(enabled_only=False)
+            dynamic = self._category_editor_fields(dict(config.settings or {}) if config else {})
         except Exception:
             dynamic = [{
                 "id": "category_editor_unavailable",
@@ -299,20 +301,21 @@ class Plugin:
         )
 
     @staticmethod
-    def _category_editor_fields() -> list[dict[str, Any]]:
+    def _category_editor_fields(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         from django.db.models import Count
         from apps.vod.models import VODCategory
 
+        settings = settings or {}
+        hidden = selected_hidden_categories(settings)
         fields: list[dict[str, Any]] = []
         for content_type, relation_name, label in (
             ("movie", "m3umovierelation", "Movie categories"),
             ("series", "m3useriesrelation", "Series categories"),
         ):
             categories = (
-                VODCategory.objects.filter(
-                    category_type=content_type,
-                    m3u_relations__m3u_account__is_active=True,
-                    m3u_relations__enabled=True,
+                VODCategory.objects.filter(category_type=content_type).filter(
+                    Q(m3u_relations__m3u_account__is_active=True, m3u_relations__enabled=True)
+                    | Q(pk__in=hidden[content_type])
                 )
                 .annotate(item_count=Count(relation_name, distinct=True))
                 .distinct()
@@ -325,12 +328,13 @@ class Plugin:
                 # An empty info row collapses to zero height. A zero-width
                 # non-joiner survives API whitespace trimming and forces one
                 # invisible text line, creating a clearly visible blank band.
-                fields.append({
-                    "id": "movie_series_section_gap",
-                    "label": "",
-                    "type": "info",
-                    "value": "\u200c",
-                })
+                for index in (1, 2):
+                    fields.append({
+                        "id": f"movie_series_section_gap_{index}",
+                        "label": "",
+                        "type": "info",
+                        "value": "\u200c",
+                    })
             fields.append({
                 "id": f"{content_type}_category_heading",
                 "label": label,
@@ -356,6 +360,13 @@ class Plugin:
                     "default": "",
                     "placeholder": "Clean name (blank = unchanged)",
                     "help_text": description,
+                })
+                fields.append({
+                    "id": f"category_hidden_{content_type}_{category.pk}",
+                    "label": "Hide this category",
+                    "type": "boolean",
+                    "default": False,
+                    "help_text": "Stops future imports and removes this provider category's existing VOD. Turn it off and refresh VOD to restore available titles.",
                 })
         if not fields:
             fields.append({
@@ -504,13 +515,9 @@ class Plugin:
         force: bool,
     ) -> dict[str, Any]:
         mappings = selected_category_mappings(settings)
+        hidden = selected_hidden_categories(settings)
         mapping_count = sum(len(group) for group in mappings.values())
-        if not mapping_count:
-            return {
-                "status": "ok",
-                "changes": {"categories": 0},
-                "message": "No clean category names are saved yet; nothing to synchronize.",
-            }
+        hidden_count = sum(len(group) for group in hidden.values())
 
         logger = logger or logging.getLogger("dispatcharr.plugins.tidyvod")
         with self._reconcile_lock() as acquired:
@@ -534,6 +541,7 @@ class Plugin:
                 "source": source,
                 "started_at": started_at,
                 "mapped_categories": mapping_count,
+                "hidden_categories": hidden_count,
             })
             try:
                 result = self._perform_category_reconciliation(settings, mappings, logger)
@@ -545,6 +553,7 @@ class Plugin:
                     "completed_at": completed_at,
                     "completed_epoch": time.time(),
                     "mapped_categories": mapping_count,
+                    "hidden_categories": hidden_count,
                     "changes": result.get("changes", {}),
                 }
                 self._atomic_json_write(self._reconcile_status_path(), status)
@@ -558,6 +567,7 @@ class Plugin:
                     "completed_at": datetime.now(datetime_timezone.utc).isoformat(),
                     "completed_epoch": time.time(),
                     "mapped_categories": mapping_count,
+                    "hidden_categories": hidden_count,
                     "error": str(exc),
                 })
                 raise
@@ -587,6 +597,10 @@ class Plugin:
         )
         counts = Counter(categories=0, movie=0, series=0)
         samples: list[dict[str, str]] = []
+
+        hidden_result = self._apply_hidden_categories(settings, logger, dry_run=False, entries=entries)
+        counts.update(hidden_result["changes"])
+        samples.extend(hidden_result.get("samples", []))
 
         with transaction.atomic():
             category_cache: dict[tuple[str, str], Any] = {}
@@ -659,7 +673,7 @@ class Plugin:
                     )
 
         export_result = None
-        if counts["categories"] and bool(settings.get("auto_export", False)):
+        if (counts["categories"] or counts["hidden_assignments"]) and bool(settings.get("auto_export", False)):
             export_result = self._run_export(settings, logger, dry_run=False)
         logger.info("tidyVOD synchronized newly imported VOD: %s", dict(counts))
         result = {
@@ -668,12 +682,90 @@ class Plugin:
             "samples": samples,
             "message": (
                 f"Repaired {counts['categories']} category assignments "
-                f"({counts['movie']} movies, {counts['series']} series)."
+                f"({counts['movie']} movies, {counts['series']} series); "
+                f"hid {counts['hidden_categories']} categories and removed "
+                f"{counts['hidden_assignments']} hidden assignments."
             ),
         }
         if export_result is not None:
             result["export"] = export_result
         return result
+
+    def _apply_hidden_categories(self, settings, logger, *, dry_run, entries=None):
+        """Disable selected provider categories and remove their VOD assignments."""
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, M3UVODCategoryRelation
+
+        hidden = selected_hidden_categories(settings)
+        entries = self._mapping_entries(settings) if entries is None else entries
+        clean_placeholders = {kind: {category_id: "__hidden__" for category_id in ids}
+                              for kind, ids in hidden.items()}
+        resolved = self._resolved_category_mappings(
+            settings, clean_placeholders, entries=entries,
+        )
+        name_targets = self._category_name_targets(entries, clean_placeholders)
+        account_filter = self._account_filter(settings)
+        counts = Counter(hidden_categories=0, restored_categories=0,
+                         hidden_assignments=0, hidden_movies=0, hidden_series=0)
+        samples = []
+
+        relation_filter = dict(account_filter)
+        category_relations = M3UVODCategoryRelation.objects.filter(**relation_filter).select_related("category")
+        category_updates = []
+        for relation in category_relations.iterator(chunk_size=1000):
+            props = dict(relation.custom_properties or {})
+            marker = dict(props.get(MARKER, {}))
+            desired = relation.category_id in resolved.get(relation.category.category_type, set())
+            managed = bool(marker.get("hidden_category"))
+            if desired and not managed:
+                marker["hidden_category"] = True
+                marker["was_enabled"] = bool(relation.enabled)
+                props[MARKER] = marker
+                relation.enabled = False
+                relation.custom_properties = props
+                category_updates.append(relation)
+                counts["hidden_categories"] += 1
+                self._sample(samples, "hide category", relation.category.name)
+            elif desired and relation.enabled:
+                relation.enabled = False
+                category_updates.append(relation)
+            elif not desired and managed:
+                relation.enabled = bool(marker.pop("was_enabled", True))
+                marker.pop("hidden_category", None)
+                if marker:
+                    props[MARKER] = marker
+                else:
+                    props.pop(MARKER, None)
+                relation.custom_properties = props
+                category_updates.append(relation)
+                counts["restored_categories"] += 1
+                self._sample(samples, "restore category", relation.category.name)
+
+        relation_specs = (("movie", M3UMovieRelation), ("series", M3USeriesRelation))
+        assignments = []
+        for kind, model in relation_specs:
+            ids = set(resolved[kind])
+            names = set(name_targets[kind])
+            if not ids and not names:
+                continue
+            query = Q(category_id__in=ids)
+            if names:
+                query |= Q(**{f"custom_properties__{MARKER}__original_category_name__in": names})
+            matched = model.objects.filter(query, **account_filter)
+            count = matched.count()
+            counts["hidden_assignments"] += count
+            counts[f"hidden_{kind}s"] += count
+            assignments.append(matched)
+
+        if not dry_run:
+            with transaction.atomic():
+                if category_updates:
+                    M3UVODCategoryRelation.objects.bulk_update(
+                        category_updates, ["enabled", "custom_properties"], batch_size=1000,
+                    )
+                for matched in assignments:
+                    matched.delete()
+
+        return {"changes": dict(counts), "samples": samples}
 
     @staticmethod
     def _category_name_targets(entries, mappings):
@@ -723,7 +815,8 @@ class Plugin:
         if config is None or not config.enabled or not bool((config.settings or {}).get("sync_curated_categories", True)):
             return {"status": "ok", "health": "disabled", "synchronization": status,
                     "message": "Automatic synchronization is disabled. Enable tidyVOD and Keep curated categories synchronized to protect your categories."}
-        if not any(selected_category_mappings(config.settings or {}).values()):
+        if not (any(selected_category_mappings(config.settings or {}).values())
+                or any(selected_hidden_categories(config.settings or {}).values())):
             return {"status": "ok", "health": "idle", "synchronization": status,
                     "message": "No category mappings are saved; nothing to synchronize."}
         if not status:
@@ -1050,17 +1143,22 @@ class Plugin:
     def _mapping_entries(cls, settings: dict[str, Any]) -> list[dict[str, Any]]:
         from apps.vod.models import VODCategory
 
-        selected = []
-        category_ids = []
-        pattern = re.compile(r"^category_override_(movie|series)_(\d+)$")
+        selected: dict[tuple[str, int], dict[str, Any]] = {}
+        override_pattern = re.compile(r"^category_override_(movie|series)_(\d+)$")
+        hidden_pattern = re.compile(r"^category_hidden_(movie|series)_(\d+)$")
         for key, value in settings.items():
-            match = pattern.fullmatch(str(key))
-            clean_name = str(value or "").strip()
-            if not match or not clean_name:
+            match = override_pattern.fullmatch(str(key))
+            if match:
+                content_type, category_id = match.group(1), int(match.group(2))
+                selected.setdefault((content_type, category_id), {})["clean_name"] = str(value or "").strip()
                 continue
-            content_type, category_id = match.group(1), int(match.group(2))
-            selected.append((content_type, category_id, clean_name))
-            category_ids.append(category_id)
+            match = hidden_pattern.fullmatch(str(key))
+            if match:
+                content_type, category_id = match.group(1), int(match.group(2))
+                selected.setdefault((content_type, category_id), {})["hidden"] = bool(value)
+        selected = {key: values for key, values in selected.items()
+                    if values.get("clean_name") or values.get("hidden")}
+        category_ids = [category_id for _, category_id in selected]
         categories = {
             category.pk: category
             for category in VODCategory.objects.filter(pk__in=category_ids).only("pk", "name", "category_type")
@@ -1075,13 +1173,14 @@ class Plugin:
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             previous_names = {}
         entries = []
-        for content_type, category_id, clean_name in selected:
+        for (content_type, category_id), values in selected.items():
             category = categories.get(category_id)
             entries.append({
                 "content_type": content_type,
                 "category_id": category_id,
                 "provider_name": category.name if category else previous_names.get((content_type, category_id)),
-                "clean_name": clean_name,
+                "clean_name": values.get("clean_name", ""),
+                "hidden": bool(values.get("hidden", False)),
             })
         return sorted(
             entries,
@@ -1169,7 +1268,7 @@ class Plugin:
             "backup": {"created_at": payload.get("created_at"), "mappings": count},
             "file": latest_path,
             "message": (
-                f"Backed up {count} clean category names. Reload this page to copy the portable JSON, "
+                f"Backed up {count} category choices (clean names and hidden categories). Reload this page to copy the portable JSON, "
                 f"or retrieve {latest_path} from the Dispatcharr data volume."
             ),
         }
@@ -1219,6 +1318,7 @@ class Plugin:
             for category in categories
         }
         restored = {}
+        restored_categories = set()
         missing = 0
         for entry in mappings:
             if not isinstance(entry, dict):
@@ -1228,10 +1328,15 @@ class Plugin:
             if category is None and entry.get("provider_name"):
                 category = by_name.get((content_type, str(entry["provider_name"]).casefold()))
             clean_name = str(entry.get("clean_name") or "").strip()
-            if category is None or not clean_name:
+            hidden = bool(entry.get("hidden", False))
+            if category is None or (not clean_name and not hidden):
                 missing += 1
                 continue
-            restored[f"category_override_{content_type}_{category.pk}"] = clean_name
+            if clean_name:
+                restored[f"category_override_{content_type}_{category.pk}"] = clean_name
+            if hidden:
+                restored[f"category_hidden_{content_type}_{category.pk}"] = True
+            restored_categories.add((content_type, category.pk))
 
         with transaction.atomic():
             config = self._plugin_config(enabled_only=False, for_update=True)
@@ -1240,19 +1345,19 @@ class Plugin:
             updated_settings = {
                 key: value
                 for key, value in (config.settings or {}).items()
-                if not str(key).startswith("category_override_")
+                if not str(key).startswith(("category_override_", "category_hidden_"))
             }
             updated_settings.update(restored)
             config.settings = updated_settings
             config.save(update_fields=["settings", "updated_at"])
 
-        logger.info("tidyVOD restored %s saved mapping fields", len(restored))
+        logger.info("tidyVOD restored %s saved category choices", len(restored_categories))
         return {
             "status": "ok",
-            "restored_mappings": len(restored),
+            "restored_mappings": len(restored_categories),
             "missing_categories": missing,
             "message": (
-                f"Restored {len(restored)} clean category names from the {source} backup; "
+                f"Restored {len(restored_categories)} category choices from the {source} backup; "
                 f"{missing} unavailable categories were skipped. "
                 "Reload the Plugins page now to show the restored fields."
             ),
@@ -1274,6 +1379,9 @@ class Plugin:
             logger.warning("Could not create automatic category-name backup: %s", exc)
         counts = Counter()
         samples: list[dict[str, str]] = []
+        hidden_result = self._apply_hidden_categories(settings, logger, dry_run=dry_run)
+        counts.update(hidden_result["changes"])
+        samples.extend(hidden_result.get("samples", []))
         relation_changes = []
         title_candidates: dict[tuple[str, int], tuple[Any, str, str]] = {}
 
@@ -1454,6 +1562,12 @@ class Plugin:
         summary = (
             f"{counts['categories']} category assignments and {counts['titles']} titles"
         )
+        if counts["hidden_categories"] or counts["restored_categories"] or counts["hidden_assignments"]:
+            summary += (
+                f"; {counts['hidden_categories']} categories hidden, "
+                f"{counts['restored_categories']} restored, and "
+                f"{counts['hidden_assignments']} hidden VOD assignments removed"
+            )
         conflicts = counts["title_conflicts"]
         if conflicts:
             summary += f" ({conflicts} title conflicts skipped)"

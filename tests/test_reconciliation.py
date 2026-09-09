@@ -62,6 +62,9 @@ class FakeQuerySet:
     def iterator(self, chunk_size=None):
         return iter(self.relations)
 
+    def filter(self, *args, **kwargs):
+        return self
+
 
 class FakeRelationManager:
     def __init__(self, relations):
@@ -108,6 +111,9 @@ class FakeAccountRelations:
 
 
 class FakeCategoryQuerySet(list):
+    def filter(self, *args, **kwargs):
+        return self
+
     def annotate(self, **annotations):
         return self
 
@@ -122,10 +128,13 @@ class FakeEditorCategoryManager:
     def __init__(self, categories):
         self.categories = categories
 
-    def filter(self, **filters):
+    def filter(self, *args, **filters):
+        category_type = filters.get("category_type")
+        if category_type is None:
+            return FakeCategoryQuerySet(self.categories)
         return FakeCategoryQuerySet([
             category for category in self.categories
-            if category.category_type == filters["category_type"]
+            if category.category_type == category_type
         ])
 
 
@@ -148,6 +157,9 @@ class ReconciliationTests(unittest.TestCase):
         vod_models = types.ModuleType("apps.vod.models")
         vod_models.M3UMovieRelation = types.SimpleNamespace(objects=movie_manager)
         vod_models.M3USeriesRelation = types.SimpleNamespace(objects=series_manager)
+        vod_models.M3UVODCategoryRelation = types.SimpleNamespace(
+            objects=types.SimpleNamespace(filter=lambda *args, **kwargs: FakeQuerySet([]))
+        )
         vod_models.VODCategory = types.SimpleNamespace(objects=category_manager)
         sys.modules["apps"] = types.ModuleType("apps")
         sys.modules["apps.vod"] = types.ModuleType("apps.vod")
@@ -272,14 +284,20 @@ class ReconciliationTests(unittest.TestCase):
             [
                 "movie_category_heading",
                 "category_override_movie_12",
-                "movie_series_section_gap",
+                "category_hidden_movie_12",
+                "movie_series_section_gap_1",
+                "movie_series_section_gap_2",
                 "series_category_heading",
                 "category_override_series_22",
+                "category_hidden_series_22",
             ],
         )
-        spacer = next(field for field in fields if field["id"] == "movie_series_section_gap")
-        self.assertEqual(spacer["value"], "\u200c")
-        self.assertTrue(spacer["value"])
+        spacers = [field for field in fields if field["id"].startswith("movie_series_section_gap_")]
+        self.assertEqual(len(spacers), 2)
+        self.assertTrue(all(field["value"] == "\u200c" for field in spacers))
+        hide = next(field for field in fields if field["id"] == "category_hidden_movie_12")
+        self.assertEqual(hide["label"], "Hide this category")
+        self.assertFalse(hide["default"])
 
 
 if __name__ == "__main__":

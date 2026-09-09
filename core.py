@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 VALID_CONTENT_TYPES = {"movie", "series", "both"}
 CATEGORY_OVERRIDE_PATTERN = re.compile(r"^category_override_(movie|series)_(\d+)$")
+CATEGORY_HIDDEN_PATTERN = re.compile(r"^category_hidden_(movie|series)_(\d+)$")
 
 
 class ConfigurationError(ValueError):
@@ -136,10 +137,23 @@ def selected_category_mappings(
         if not match:
             continue
         content_type, raw_category_id = match.groups()
+        if settings.get(f"category_hidden_{content_type}_{raw_category_id}", False):
+            continue
         target = category_override(settings, content_type, raw_category_id)
         if target:
             mappings[content_type][int(raw_category_id)] = target
     return mappings
+
+
+def selected_hidden_categories(settings: dict[str, Any]) -> dict[str, set[int]]:
+    """Return explicitly hidden category IDs, grouped by content type."""
+    hidden: dict[str, set[int]] = {"movie": set(), "series": set()}
+    for key, value in settings.items():
+        match = CATEGORY_HIDDEN_PATTERN.fullmatch(str(key))
+        if match and value:
+            content_type, raw_category_id = match.groups()
+            hidden[content_type].add(int(raw_category_id))
+    return hidden
 
 
 def clean_title(name: str, content_type: str, rules: Iterable[TitleRule]) -> str:

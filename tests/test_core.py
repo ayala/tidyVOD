@@ -9,6 +9,7 @@ from core import (
     compile_title_rules,
     parse_account_names,
     selected_category_mappings,
+    selected_hidden_categories,
 )
 
 
@@ -70,6 +71,15 @@ class RulesTests(unittest.TestCase):
                 "series": {22: "Drama"},
             },
         )
+
+    def test_hidden_category_is_excluded_from_clean_mappings(self):
+        settings = {
+            "category_override_movie_12": "Netflix",
+            "category_hidden_movie_12": True,
+            "category_hidden_series_22": False,
+        }
+        self.assertEqual(selected_hidden_categories(settings), {"movie": {12}, "series": set()})
+        self.assertEqual(selected_category_mappings(settings), {"movie": {}, "series": {}})
 
 if __name__ == "__main__":
     unittest.main()
