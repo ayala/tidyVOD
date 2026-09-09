@@ -117,6 +117,15 @@ class RecoveryTests(unittest.TestCase):
         M3UMovieRelation.objects.filter(pk=relation.pk).update(category=self.source)
         self.assertEqual(self.run_sync()["changes"]["categories"], 1)
 
+    def test_source_count_follows_items_moved_to_clean_category(self):
+        direct = self.relation(self.source)
+        self.relation(self.source)
+        self.assertEqual(self.plugin._source_item_counts("movie", [self.source]), {self.source.pk: 2})
+        self.run_sync()
+        direct.refresh_from_db()
+        self.assertEqual(direct.category.name, "Netflix")
+        self.assertEqual(self.plugin._source_item_counts("movie", [self.source]), {self.source.pk: 2})
+
     def test_null_and_unmapped_assignments_recover_from_markers(self):
         wrong = VODCategory.objects.create(name="Wrong category", category_type="movie")
         self.relation(None, marker=True)

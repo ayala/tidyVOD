@@ -276,7 +276,12 @@ class ReconciliationTests(unittest.TestCase):
             objects=FakeEditorCategoryManager(categories)
         )
 
-        fields = self.module.Plugin._category_editor_fields()
+        with patch.object(
+            self.module.Plugin,
+            "_source_item_counts",
+            side_effect=lambda content_type, rows: {row.pk: row.item_count for row in rows},
+        ):
+            fields = self.module.Plugin._category_editor_fields()
         ids = [field["id"] for field in fields]
 
         self.assertEqual(

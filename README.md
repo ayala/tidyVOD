@@ -26,7 +26,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.7.4/tidyvod-v0.7.4.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.7.5/tidyvod-v0.7.5.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -88,6 +88,11 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Disable future provider imports and remove existing assignments for hidden categories.
 - Preserve and restore hide choices through automatic and portable backups.
 - Double the visual separation between Movie and Series settings.
+
+### 0.7.5 source-count correction
+
+- Count VOD by its original provider category after tidyVOD moves it into a clean category.
+- Continue showing zero for a hidden category after its provider assignments are removed.
 
 Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
 

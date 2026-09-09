@@ -54,7 +54,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.7.4"
+    version = "0.7.5"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -302,22 +302,20 @@ class Plugin:
 
     @staticmethod
     def _category_editor_fields(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        from django.db.models import Count
         from apps.vod.models import VODCategory
 
         settings = settings or {}
         hidden = selected_hidden_categories(settings)
         fields: list[dict[str, Any]] = []
-        for content_type, relation_name, label in (
-            ("movie", "m3umovierelation", "Movie categories"),
-            ("series", "m3useriesrelation", "Series categories"),
+        for content_type, label in (
+            ("movie", "Movie categories"),
+            ("series", "Series categories"),
         ):
             categories = (
                 VODCategory.objects.filter(category_type=content_type).filter(
                     Q(m3u_relations__m3u_account__is_active=True, m3u_relations__enabled=True)
                     | Q(pk__in=hidden[content_type])
                 )
-                .annotate(item_count=Count(relation_name, distinct=True))
                 .distinct()
                 .order_by("name")
             )
@@ -341,6 +339,7 @@ class Plugin:
                 "type": "info",
                 "value": f"{len(rows)} detected. Matching clean names are combined automatically.",
             })
+            item_counts = Plugin._source_item_counts(content_type, rows)
             for category in rows:
                 account_names = list(
                     category.m3u_relations.filter(m3u_account__is_active=True)
@@ -350,7 +349,7 @@ class Plugin:
                 provider_text = ", ".join(account_names)
                 if len(account_names) == 4:
                     provider_text += ", …"
-                description = f"{category.item_count} {content_type}(s)"
+                description = f"{item_counts.get(category.pk, 0)} {content_type}(s)"
                 if provider_text:
                     description += f" • {provider_text}"
                 fields.append({
@@ -376,6 +375,46 @@ class Plugin:
                 "value": "Enable VOD scanning on an Xtream provider, refresh it, then reload plugins.",
             })
         return fields
+
+    @staticmethod
+    def _source_item_counts(content_type: str, categories: list[Any]) -> dict[int, int]:
+        """Count current relations by their provider source, even after curation."""
+        from django.db.models import Count
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation
+
+        if not categories:
+            return {}
+        relation_model = M3UMovieRelation if content_type == "movie" else M3USeriesRelation
+        category_ids = {category.pk for category in categories}
+        category_ids_by_name = {category.name: category.pk for category in categories}
+        marker_id = f"custom_properties__{MARKER}__original_category_id"
+        marker_name = f"custom_properties__{MARKER}__original_category_name"
+        rows = (
+            relation_model.objects.filter(m3u_account__is_active=True)
+            .filter(
+                Q(category_id__in=category_ids)
+                | Q(**{f"{marker_id}__in": category_ids})
+                | Q(**{f"{marker_name}__in": list(category_ids_by_name)})
+            )
+            .values("category_id", marker_id, marker_name)
+            .annotate(total=Count("pk"))
+        )
+        counts = Counter()
+        for row in rows:
+            original_id = row.get(marker_id)
+            try:
+                original_id = int(original_id)
+            except (TypeError, ValueError):
+                original_id = None
+            original_name = row.get(marker_name)
+            source_id = (
+                original_id if original_id in category_ids
+                else category_ids_by_name.get(original_name)
+                or (row.get("category_id") if row.get("category_id") in category_ids else None)
+            )
+            if source_id is not None:
+                counts[source_id] += row["total"]
+        return dict(counts)
 
     def run(self, action: str, params: dict, context: dict) -> dict[str, Any]:
         settings = context.get("settings", {})
