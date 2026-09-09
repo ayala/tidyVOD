@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.5/tidyvod-v0.8.5.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.6/tidyvod-v0.8.6.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -148,6 +148,15 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Recognize configurable leading release labels such as `SD/CAM –`, `HDCAM -`, and `TS |` before searching TMDB.
 - Require an explicit separator so genuine titles such as `Cam (2018)` are not damaged.
 - Leave unmatched titles and their existing provider artwork unchanged.
+
+### 0.8.6 player-safe TMDB titles
+
+- Store matched TMDB names in a player-safe form by default, using language prefixes such as `ES -`.
+- Preserve real bracketed names in clients that otherwise treat them as tags by substituting visually equivalent fullwidth brackets; `[REC]²` becomes `ES - ［REC］² (2009)`.
+- Normalize Unicode sequel digits only during matching, so `[REC]²` compares as `REC2` while the official superscript remains in the displayed title.
+- Allow exact TMDB title styling by turning off **Player-safe TMDB titles**.
+- Keep selected TMDB posters in a relation field that survives Dispatcharr's on-demand provider metadata refresh.
+- Report both shared-item and provider-relation poster assignments that need repair.
 
 Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
 

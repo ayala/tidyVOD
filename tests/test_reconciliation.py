@@ -339,6 +339,14 @@ class ReconciliationTests(unittest.TestCase):
             self.module.Plugin._relation_tmdb_artwork_url(relation),
             "https://image.tmdb.org/t/p/w780/poster.jpg",
         )
+        refreshed = types.SimpleNamespace(custom_properties={
+            "info": {"movie_image": "https://image.tmdb.org/t/p/w780/managed.jpg"},
+            "detailed_info": {"movie_image": "https://provider.example/refreshed.jpg"},
+        })
+        self.assertEqual(
+            self.module.Plugin._relation_tmdb_artwork_url(refreshed),
+            "https://image.tmdb.org/t/p/w780/managed.jpg",
+        )
 
 
 if __name__ == "__main__":

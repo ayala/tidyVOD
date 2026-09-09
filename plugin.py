@@ -64,7 +64,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.5"
+    version = "0.8.6"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -103,6 +103,13 @@ class Plugin:
             "type": "boolean",
             "default": True,
             "help_text": "Recommended. Produces titles such as ES| Die Hard (1989) so localized copies remain recognizable.",
+        },
+        {
+            "id": "player_safe_tmdb_titles",
+            "label": "Player-safe TMDB titles",
+            "type": "boolean",
+            "default": True,
+            "help_text": "Recommended. Uses a language prefix such as ES - and substitutes visually equivalent brackets that IPTV apps do not hide; for example [REC]² becomes ES - ［REC］² (2009).",
         },
         {
             "id": "language_prefix_mappings",
@@ -1590,10 +1597,18 @@ class Plugin:
     @staticmethod
     def _relation_tmdb_artwork_url(relation: Any) -> str | None:
         props = relation.custom_properties or {}
-        detail = props.get("detailed_info", {}) if isinstance(props, dict) else {}
-        if not isinstance(detail, dict):
+        if not isinstance(props, dict):
             return None
-        return str(detail.get("movie_image") or "").strip() or None
+        # Dispatcharr checks ``info`` before provider-refreshed
+        # ``detailed_info``. tidyVOD owns the former on movie/series relations
+        # so an on-demand advanced refresh cannot replace the selected poster.
+        for container_name in ("info", "detailed_info"):
+            container = props.get(container_name, {})
+            if isinstance(container, dict):
+                value = str(container.get("movie_image") or "").strip()
+                if value:
+                    return value
+        return None
 
     def _run_tmdb_cleanup(
         self, settings: dict[str, Any], logger: Any, *, limit: int
@@ -1624,6 +1639,7 @@ class Plugin:
             "SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER",
         ))
         keep_prefix = bool(settings.get("keep_language_prefix", True))
+        player_safe_titles = bool(settings.get("player_safe_tmdb_titles", True))
         entries = self._mapping_entries(settings)
         names = {
             kind: {
@@ -1726,6 +1742,7 @@ class Plugin:
                 marker.get("tmdb_cleanup_managed")
                 and marker.get("tmdb_cleanup_language") == candidate["language"]
                 and marker.get("tmdb_cleanup_keep_prefix") == keep_prefix
+                and marker.get("tmdb_cleanup_player_safe") == player_safe_titles
                 and marker.get("tmdb_cleanup_name") == item.name
                 and marker.get("tmdb_cleanup_poster_url") == current_logo
                 and relation_artwork_ready
@@ -1739,10 +1756,25 @@ class Plugin:
                 and marker.get("tmdb_cleanup_language") == candidate["language"]
                 and marker.get("tmdb_cleanup_keep_prefix") == keep_prefix
             ):
+                cached_name = marker["tmdb_cleanup_name"]
+                if player_safe_titles:
+                    cached_name = re.sub(
+                        r"^\s*[A-Za-z]{2,3}\s*(?:\||:|[-–—])\s*",
+                        "",
+                        cached_name,
+                        count=1,
+                    )
+                    cached_name = formatted_tmdb_title(
+                        re.sub(r"\s*\((?:18|19|20|21)\d{2}\)\s*$", "", cached_name),
+                        item.year,
+                        candidate["prefix"],
+                        keep_prefix,
+                        True,
+                    )
                 candidate["cached_result"] = {
                     "status": "ok",
                     "tmdb_id": marker.get("tmdb_cleanup_tmdb_id", ""),
-                    "name": marker["tmdb_cleanup_name"],
+                    "name": cached_name,
                     "poster_url": marker["tmdb_cleanup_poster_url"],
                     "poster_language": marker.get("tmdb_cleanup_poster_language"),
                     "cached": True,
@@ -1838,7 +1870,9 @@ class Plugin:
                 return {
                     "status": "ok",
                     "tmdb_id": tmdb_id,
-                    "name": formatted_tmdb_title(str(title), year, candidate["prefix"], keep_prefix),
+                    "name": formatted_tmdb_title(
+                        str(title), year, candidate["prefix"], keep_prefix, player_safe_titles
+                    ),
                     "poster_url": f"https://image.tmdb.org/t/p/w780{poster['file_path']}",
                     "poster_language": poster.get("iso_639_1"),
                 }
@@ -1877,6 +1911,7 @@ class Plugin:
                     "tmdb_cleanup_language": candidate["language"],
                     "tmdb_cleanup_poster_language": result["poster_language"],
                     "tmdb_cleanup_keep_prefix": keep_prefix,
+                    "tmdb_cleanup_player_safe": player_safe_titles,
                     "tmdb_cleanup_name": result["name"],
                     "tmdb_cleanup_poster_url": result["poster_url"],
                 })
@@ -1902,13 +1937,19 @@ class Plugin:
                     )
                     detail_value = relation_props.get("detailed_info", {})
                     detail = dict(detail_value) if isinstance(detail_value, dict) else {}
+                    info_value = relation_props.get("info", {})
+                    info = dict(info_value) if isinstance(info_value, dict) else {}
                     if not relation_marker.get("tmdb_relation_artwork_managed"):
                         relation_marker["tmdb_original_relation_movie_image_present"] = "movie_image" in detail
                         relation_marker["tmdb_original_relation_movie_image"] = detail.get("movie_image")
+                        relation_marker["tmdb_original_relation_info_movie_image_present"] = "movie_image" in info
+                        relation_marker["tmdb_original_relation_info_movie_image"] = info.get("movie_image")
                     relation_marker["tmdb_relation_artwork_managed"] = True
                     relation_marker["tmdb_relation_artwork_url"] = result["poster_url"]
                     detail["movie_image"] = result["poster_url"]
+                    info["movie_image"] = result["poster_url"]
                     relation_props["detailed_info"] = detail
+                    relation_props["info"] = info
                     relation_props[MARKER] = relation_marker
                     relation.custom_properties = relation_props
                     relation_updates[candidate["kind"]].append(relation)
@@ -1962,6 +2003,13 @@ class Plugin:
                     counts["item_posters_need_repair"] += 1
                 if len(titles) < 20:
                     titles.append(item.name)
+                relations = relation_model.objects.filter(
+                    **account_filter, **{id_field: item.pk}
+                ).only("custom_properties")
+                for relation in relations.iterator(chunk_size=100):
+                    counts["managed_relations"] += 1
+                    if self._relation_tmdb_artwork_url(relation) != expected:
+                        counts["relation_posters_need_repair"] += 1
         total = counts["movie"] + counts["series"]
         examples = ", ".join(titles) if titles else "none yet"
         return {
@@ -1970,7 +2018,9 @@ class Plugin:
             "samples": [{"type": "cleaned title", "change": title} for title in titles],
             "message": (
                 f"{total} TMDB-managed titles ({counts['movie']} movies, {counts['series']} series); "
-                f"{counts['item_posters_need_repair']} item-level poster assignments need repair. "
+                f"{counts['item_posters_need_repair']} item-level and "
+                f"{counts['relation_posters_need_repair']} of {counts['managed_relations']} relation-level "
+                "poster assignments need repair. "
                 f"First {len(titles)}: {examples}."
             ),
         }
@@ -2111,11 +2161,19 @@ class Plugin:
                     if marker.get("tmdb_relation_artwork_managed"):
                         detail_value = props.get("detailed_info", {})
                         detail = dict(detail_value) if isinstance(detail_value, dict) else {}
+                        info_value = props.get("info", {})
+                        info = dict(info_value) if isinstance(info_value, dict) else {}
                         if marker.get("tmdb_original_relation_movie_image_present"):
                             detail["movie_image"] = marker.get("tmdb_original_relation_movie_image")
                         else:
                             detail.pop("movie_image", None)
+                        if marker.get("tmdb_original_relation_info_movie_image_present"):
+                            info["movie_image"] = marker.get("tmdb_original_relation_info_movie_image")
+                        else:
+                            info.pop("movie_image", None)
                         props["detailed_info"] = detail
+                        if info or "info" in props:
+                            props["info"] = info
                         counts["relation_artwork"] += 1
                         touched = True
                     if not touched:

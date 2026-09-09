@@ -5,6 +5,7 @@ from core import (
     category_override,
     category_target,
     clean_title,
+    comparable_title,
     category_language,
     compile_category_rules,
     compile_title_rules,
@@ -148,6 +149,17 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(
             match_title_candidates("A MAN CALLED OTTO TOM HANKS"),
             ["A MAN CALLED OTTO TOM HANKS"],
+        )
+
+    def test_player_safe_tmdb_title_preserves_rec_name(self):
+        self.assertEqual(comparable_title("[REC]²"), "rec2")
+        self.assertEqual(
+            formatted_tmdb_title("[REC]²", 2009, "ES", True, True),
+            "ES - ［REC］² (2009)",
+        )
+        self.assertEqual(
+            formatted_tmdb_title("[REC] 4: Apocalypse", 2014, "ES", True, True),
+            "ES - ［REC］ 4: Apocalypse (2014)",
         )
 
 if __name__ == "__main__":

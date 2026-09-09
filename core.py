@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -281,7 +282,8 @@ def normalize_match_title(
 
 
 def comparable_title(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", (value or "").casefold())
+    normalized = unicodedata.normalize("NFKC", value or "")
+    return re.sub(r"[^a-z0-9]+", "", normalized.casefold())
 
 
 def match_title_candidates(value: str) -> list[str]:
@@ -304,13 +306,23 @@ def match_title_candidates(value: str) -> list[str]:
 
 
 def formatted_tmdb_title(
-    title: str, year: int | None, prefix: str | None, keep_prefix: bool
+    title: str,
+    year: int | None,
+    prefix: str | None,
+    keep_prefix: bool,
+    player_safe: bool = False,
 ) -> str:
-    value = re.sub(r"\s+", " ", title or "").strip()
+    value = title or ""
+    if player_safe:
+        # Some IPTV clients interpret square-bracketed parts of real titles
+        # (notably [REC]) as provider tags and hide them. Fullwidth brackets
+        # remain visually faithful while avoiding that metadata parser.
+        value = value.translate(str.maketrans({"[": "［", "]": "］"}))
+    value = re.sub(r"\s+", " ", value).strip()
     if year:
         value = f"{value} ({year})"
     if keep_prefix and prefix:
-        value = f"{prefix}| {value}"
+        value = f"{prefix} - {value}" if player_safe else f"{prefix}| {value}"
     return value[:255]
 
 
