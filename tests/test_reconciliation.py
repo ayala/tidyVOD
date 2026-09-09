@@ -250,6 +250,31 @@ class ReconciliationTests(unittest.TestCase):
         config.settings = {}
         self.assertEqual(plugin._reconcile_status_result()["health"], "idle")
 
+    def test_tmdb_watcher_field_shows_state_time_and_counts(self):
+        plugin = self.module.Plugin.__new__(self.module.Plugin)
+        plugin._reconcile_thread = Mock()
+        plugin._reconcile_thread.is_alive.return_value = True
+        now = datetime.now(timezone.utc)
+        plugin._read_reconcile_status = Mock(return_value={
+            "status": "ok",
+            "completed_at": now.isoformat(),
+            "last_tmdb_run_at": now.isoformat(),
+            "last_cleaned_at": now.isoformat(),
+            "last_tmdb_result": {
+                "changes": {"cleaned": 7, "already_clean": 10, "remaining": 3}
+            },
+        })
+        field = plugin._tmdb_watcher_field(
+            {
+                "sync_curated_categories": True,
+                "category_tmdb_cleanup_movie_12": True,
+            },
+            True,
+        )
+        self.assertEqual(field["label"], "TMDB watcher — WATCHING")
+        self.assertIn("7 cleaned", field["value"])
+        self.assertIn("3 queued", field["value"])
+
     def test_category_editor_has_a_gap_between_movies_and_series(self):
         categories = [
             types.SimpleNamespace(

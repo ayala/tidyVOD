@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.6/tidyvod-v0.8.6.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.7/tidyvod-v0.8.7.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -157,6 +157,13 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Allow exact TMDB title styling by turning off **Player-safe TMDB titles**.
 - Keep selected TMDB posters in a relation field that survives Dispatcharr's on-demand provider metadata refresh.
 - Report both shared-item and provider-relation poster assignments that need repair.
+
+### 0.8.7 visible watcher status and full report
+
+- Show **TMDB watcher — WATCHING**, **RUNNING**, or **OFF** in Settings with last-pass, last-change, and result counts.
+- Save every managed title and its item/relation poster status to `/data/plugins/.tidyvod_backups/tmdb-cleanup-report.csv` when **Show cleaned titles** runs.
+- Show the report path beneath the Actions list instead of relying only on the short notification popup.
+- Expose the player-safe title and leading release-label settings that were previously omitted from the generated Settings panel.
 
 Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
 

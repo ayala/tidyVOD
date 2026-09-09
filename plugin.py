@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone as datetime_timezone
 from pathlib import Path
@@ -64,7 +65,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.6"
+    version = "0.8.7"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -351,8 +352,19 @@ class Plugin:
         base = {field["id"]: field for field in self.BASE_FIELDS}
         try:
             config = self._plugin_config(enabled_only=False)
-            dynamic = self._category_editor_fields(dict(config.settings or {}) if config else {})
+            current_settings = dict(config.settings or {}) if config else {}
+            dynamic = self._category_editor_fields(current_settings)
+            watcher_status = self._tmdb_watcher_field(
+                current_settings, bool(config and config.enabled)
+            )
         except Exception:
+            current_settings = {}
+            watcher_status = {
+                "id": "tmdb_watcher_status",
+                "label": "TMDB watcher — status unavailable",
+                "type": "info",
+                "value": "Reload the plugin or use Show status for diagnostics.",
+            }
             dynamic = [{
                 "id": "category_editor_unavailable",
                 "label": "Category list unavailable",
@@ -367,12 +379,79 @@ class Plugin:
         ]
         return (
             [base["category_editor_help"], base["account_names"]]
-            + [base["tmdb_cleanup_help"], base["tmdb_api_key"], base["keep_language_prefix"], base["language_prefix_mappings"], base["removable_title_tags"]]
+            + [watcher_status]
+            + [
+                base["tmdb_cleanup_help"], base["tmdb_api_key"],
+                base["keep_language_prefix"], base["player_safe_tmdb_titles"],
+                base["language_prefix_mappings"], base["removable_title_tags"],
+                base["leading_release_labels"],
+            ]
             + dynamic
             + [base["portable_mapping_json"], base["sync_curated_categories"]]
             + [base[field_id] for field_id in export_ids]
             + [base[field_id] for field_id in advanced_ids]
         )
+
+    def _tmdb_watcher_field(
+        self, settings: dict[str, Any], plugin_enabled: bool
+    ) -> dict[str, Any]:
+        status = self._read_reconcile_status()
+        selected = sum(
+            len(values) for values in selected_tmdb_cleanup_categories(settings).values()
+        )
+        thread_alive = bool(
+            self._reconcile_thread is not None and self._reconcile_thread.is_alive()
+        )
+        enabled = (
+            plugin_enabled
+            and bool(settings.get("sync_curated_categories", True))
+            and selected > 0
+            and thread_alive
+        )
+        state = "OFF"
+        if enabled:
+            if not status:
+                state = "STARTING"
+            elif status.get("status") == "running":
+                state = "RUNNING"
+            elif status.get("status") == "error":
+                state = "ERROR"
+            else:
+                timestamp = status.get("completed_at") or status.get("started_at")
+                try:
+                    age = time.time() - datetime.fromisoformat(str(timestamp)).timestamp()
+                except (TypeError, ValueError):
+                    age = float("inf")
+                state = "STALE" if age > self.RECONCILE_STALE_SECONDS else "WATCHING"
+
+        def local_time(value: Any) -> str:
+            try:
+                parsed = datetime.fromisoformat(str(value))
+                return parsed.astimezone().strftime("%b %-d, %-I:%M %p")
+            except (TypeError, ValueError):
+                return "never"
+
+        last_run = status.get("last_tmdb_run_at") or status.get("completed_at")
+        last_cleaned = status.get("last_cleaned_at")
+        tmdb = status.get("last_tmdb_result") or status.get("tmdb_cleanup") or {}
+        changes = tmdb.get("changes") or {}
+        value = (
+            f"{selected} categories selected • last pass {local_time(last_run)} • "
+            f"last changed artwork/titles {local_time(last_cleaned)}. "
+            f"Last result: {changes.get('cleaned', 0)} cleaned, "
+            f"{changes.get('already_clean', 0)} already clean, "
+            f"{changes.get('ambiguous', 0) + changes.get('unmatched', 0)} uncertain, "
+            f"{changes.get('no_clean_poster', 0)} without a suitable poster, "
+            f"{changes.get('request_error', 0)} request errors, "
+            f"{changes.get('remaining', 0)} queued. "
+            "Reopen or reload this panel to refresh the status."
+        )
+        return {
+            "id": "tmdb_watcher_status",
+            "label": f"TMDB watcher — {state}",
+            "type": "info",
+            "value": value,
+        }
 
     @staticmethod
     def _category_editor_fields(settings: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -544,7 +623,9 @@ class Plugin:
                 with self._reconcile_lock() as acquired:
                     if not acquired:
                         return {"status": "error", "message": "Synchronization is running. Please retry shortly."}
-                    return self._run_tmdb_cleanup(settings, logger, limit=250)
+                    result = self._run_tmdb_cleanup(settings, logger, limit=250)
+                    self._record_manual_tmdb_status(result)
+                    return result
             if action == "tmdb_cleanup_report":
                 return self._tmdb_cleanup_report(settings)
             if action == "preview_export":
@@ -587,6 +668,15 @@ class Plugin:
                 else "Continuous curated-category synchronization is disabled."
             ),
         }
+
+    def _record_manual_tmdb_status(self, result: dict[str, Any]) -> None:
+        now = datetime.now(datetime_timezone.utc).isoformat()
+        status = self._read_reconcile_status()
+        status["last_tmdb_run_at"] = now
+        status["last_tmdb_result"] = result
+        if (result.get("changes") or {}).get("cleaned", 0):
+            status["last_cleaned_at"] = now
+        self._atomic_json_write(self._reconcile_status_path(), status)
 
     def _reconcile_loop(self) -> None:
         """Continuously catch VOD relations created after Dispatcharr's M3U event."""
@@ -697,14 +787,18 @@ class Plugin:
                 }
 
             started_at = datetime.now(datetime_timezone.utc).isoformat()
-            self._atomic_json_write(self._reconcile_status_path(), {
+            running_status = {
                 "status": "running",
                 "source": source,
                 "started_at": started_at,
                 "mapped_categories": mapping_count,
                 "hidden_categories": hidden_count,
                 "tmdb_categories": tmdb_count,
-            })
+            }
+            for key in ("last_tmdb_run_at", "last_tmdb_result", "last_cleaned_at"):
+                if previous.get(key):
+                    running_status[key] = previous[key]
+            self._atomic_json_write(self._reconcile_status_path(), running_status)
             try:
                 result = self._perform_category_reconciliation(settings, mappings, logger)
                 completed_at = datetime.now(datetime_timezone.utc).isoformat()
@@ -720,6 +814,13 @@ class Plugin:
                     "changes": result.get("changes", {}),
                     "tmdb_cleanup": result.get("tmdb_cleanup", {}),
                 }
+                tmdb_result = result.get("tmdb_cleanup") or {}
+                status["last_tmdb_run_at"] = completed_at
+                status["last_tmdb_result"] = tmdb_result
+                if (tmdb_result.get("changes") or {}).get("cleaned", 0):
+                    status["last_cleaned_at"] = completed_at
+                elif previous.get("last_cleaned_at"):
+                    status["last_cleaned_at"] = previous["last_cleaned_at"]
                 self._atomic_json_write(self._reconcile_status_path(), status)
                 result["last_run"] = completed_at
                 return result
@@ -1988,13 +2089,33 @@ class Plugin:
         )
         counts = Counter()
         titles: list[str] = []
+        report_rows: list[dict[str, Any]] = []
         for kind, model, relation_model, id_field in specs:
             ids = relation_model.objects.filter(**account_filter).values_list(id_field, flat=True)
             items = model.objects.filter(
                 pk__in=ids,
                 **{f"custom_properties__{MARKER}__tmdb_cleanup_managed": True},
             ).select_related("logo")
-            for item in items.iterator(chunk_size=500):
+            managed_items = list(items.iterator(chunk_size=500))
+            expected_by_id = {
+                item.pk: (item.custom_properties or {}).get(MARKER, {}).get(
+                    "tmdb_cleanup_poster_url"
+                )
+                for item in managed_items
+            }
+            relation_summary: dict[int, Counter] = defaultdict(Counter)
+            relations = relation_model.objects.filter(
+                **account_filter, **{f"{id_field}__in": list(expected_by_id)}
+            ).only("custom_properties", id_field)
+            for relation in relations.iterator(chunk_size=500):
+                item_id = getattr(relation, id_field)
+                relation_summary[item_id]["total"] += 1
+                counts["managed_relations"] += 1
+                if self._relation_tmdb_artwork_url(relation) != expected_by_id.get(item_id):
+                    relation_summary[item_id]["repairs"] += 1
+                    counts["relation_posters_need_repair"] += 1
+
+            for item in managed_items:
                 marker = (item.custom_properties or {}).get(MARKER, {})
                 counts[kind] += 1
                 expected = marker.get("tmdb_cleanup_poster_url")
@@ -2003,17 +2124,48 @@ class Plugin:
                     counts["item_posters_need_repair"] += 1
                 if len(titles) < 20:
                     titles.append(item.name)
-                relations = relation_model.objects.filter(
-                    **account_filter, **{id_field: item.pk}
-                ).only("custom_properties")
-                for relation in relations.iterator(chunk_size=100):
-                    counts["managed_relations"] += 1
-                    if self._relation_tmdb_artwork_url(relation) != expected:
-                        counts["relation_posters_need_repair"] += 1
+                relation_count = relation_summary[item.pk]["total"]
+                relation_repairs = relation_summary[item.pk]["repairs"]
+                report_rows.append({
+                    "content_type": kind,
+                    "item_id": item.pk,
+                    "title": item.name,
+                    "tmdb_id": marker.get("tmdb_cleanup_tmdb_id", ""),
+                    "language": marker.get("tmdb_cleanup_language", ""),
+                    "poster_url": expected or "",
+                    "item_poster": "ok" if expected and current == expected else "needs repair",
+                    "provider_relations": relation_count,
+                    "relation_posters_needing_repair": relation_repairs,
+                })
         total = counts["movie"] + counts["series"]
         examples = ", ".join(titles) if titles else "none yet"
+        report_path = os.path.join(self._mapping_backup_dir(), "tmdb-cleanup-report.csv")
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
+        fd, temporary_path = tempfile.mkstemp(
+            prefix=".tmdb-report-", suffix=".csv", dir=os.path.dirname(report_path)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                columns = [
+                    "content_type", "item_id", "title", "tmdb_id", "language",
+                    "poster_url", "item_poster", "provider_relations",
+                    "relation_posters_needing_repair",
+                ]
+                writer = csv.DictWriter(handle, fieldnames=columns)
+                writer.writeheader()
+                writer.writerows(report_rows)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, report_path)
+        except Exception:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+            raise
         return {
             "status": "ok",
+            "file": report_path,
             "changes": dict(counts),
             "samples": [{"type": "cleaned title", "change": title} for title in titles],
             "message": (
@@ -2021,7 +2173,8 @@ class Plugin:
                 f"{counts['item_posters_need_repair']} item-level and "
                 f"{counts['relation_posters_need_repair']} of {counts['managed_relations']} relation-level "
                 "poster assignments need repair. "
-                f"First {len(titles)}: {examples}."
+                f"Full {total}-title report saved to {report_path}. "
+                f"Popup sample ({len(titles)}): {examples}."
             ),
         }
 
