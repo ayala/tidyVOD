@@ -125,6 +125,21 @@ class RulesTests(unittest.TestCase):
             "ES| El peor vecino del mundo (2022)",
         )
 
+    def test_leading_release_label_can_be_removed_without_harming_real_titles(self):
+        labels = parse_cleanup_tokens("SD/CAM, CAM, HDCAM")
+        self.assertEqual(
+            normalize_match_title("SD/CAM – Moana (2026)", [], labels),
+            ("Moana", 2026),
+        )
+        self.assertEqual(
+            normalize_match_title("EN| HDCAM - Disclosure Day (2026)", [], labels),
+            ("Disclosure Day", 2026),
+        )
+        self.assertEqual(
+            normalize_match_title("Cam (2018)", [], labels),
+            ("Cam", 2018),
+        )
+
     def test_trailing_actor_candidate_requires_title_case(self):
         self.assertEqual(
             match_title_candidates("A Man Called Otto TOM HANKS"),

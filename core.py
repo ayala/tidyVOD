@@ -243,9 +243,29 @@ def parse_cleanup_tokens(raw: Any) -> list[str]:
     return [token.strip() for token in re.split(r"[,\n]+", raw) if token.strip()]
 
 
-def normalize_match_title(name: str, removable_tokens: Iterable[str]) -> tuple[str, int | None]:
+def normalize_match_title(
+    name: str,
+    removable_tokens: Iterable[str],
+    leading_release_labels: Iterable[str] = (),
+) -> tuple[str, int | None]:
     """Create a conservative TMDB search title and extract a reliable year."""
     value = PROVIDER_TITLE_LANGUAGE_PATTERN.sub("", name or "", count=1)
+    # Providers commonly prepend availability/quality labels such as
+    # ``SD/CAM –``. Only remove configured labels at the beginning and only
+    # when followed by an explicit separator, so a real title such as ``Cam``
+    # remains searchable.
+    for label in sorted(set(leading_release_labels), key=len, reverse=True):
+        escaped = re.escape(label).replace(r"\ ", r"[\s._-]*")
+        stripped = re.sub(
+            rf"^\s*{escaped}\s*(?:[|:•]|[-–—]\s+)\s*",
+            "",
+            value,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if stripped != value:
+            value = stripped
+            break
     years = list(re.finditer(r"(?<!\d)(18\d{2}|19\d{2}|20\d{2}|21\d{2})(?!\d)", value))
     year = int(years[-1].group(1)) if years else None
     if years:

@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.4/tidyvod-v0.8.4.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.5/tidyvod-v0.8.5.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -142,6 +142,12 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Apply selected TMDB artwork to the provider relation that Dispatcharr displays, not only the shared Movie/Series logo.
 - Preserve the original relation artwork for Restore and automatically repair provider-refresh overwrites without repeating TMDB requests.
 - Add **Show cleaned titles** with managed movie/series counts, poster-repair detection, and the first 20 cleaned names.
+
+### 0.8.5 provider release-label matching
+
+- Recognize configurable leading release labels such as `SD/CAM –`, `HDCAM -`, and `TS |` before searching TMDB.
+- Require an explicit separator so genuine titles such as `Cam (2018)` are not damaged.
+- Leave unmatched titles and their existing provider artwork unchanged.
 
 Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
 

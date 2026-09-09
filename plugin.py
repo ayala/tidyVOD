@@ -64,7 +64,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.4"
+    version = "0.8.5"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -117,6 +117,13 @@ class Plugin:
             "type": "text",
             "default": "4K, UHD, HDR, HDR10, HDR10+, Dolby Vision, DV, 2160p, 1080p, 720p, FHD, HEVC, H.265, H265, x265, AV1, BluRay, Blu-ray, WEB-DL, WEBRip, BDRip, REMUX, Dolby Atmos, Atmos, DDP5.1, AAC",
             "help_text": "Comma-separated and editable. These tokens are used only to form safe searches; the final title comes from a confirmed TMDB record.",
+        },
+        {
+            "id": "leading_release_labels",
+            "label": "Remove leading release labels",
+            "type": "text",
+            "default": "SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER",
+            "help_text": "Comma-separated and editable. These are removed only when they begin a provider title and are followed by a separator, such as SD/CAM – Moana (2026).",
         },
         {
             "id": "advanced_rules_help",
@@ -1612,6 +1619,10 @@ class Plugin:
 
         aliases = parse_language_aliases(settings.get("language_prefix_mappings", ""))
         removable = parse_cleanup_tokens(settings.get("removable_title_tags", ""))
+        leading_release_labels = parse_cleanup_tokens(settings.get(
+            "leading_release_labels",
+            "SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER",
+        ))
         keep_prefix = bool(settings.get("keep_language_prefix", True))
         entries = self._mapping_entries(settings)
         names = {
@@ -1776,7 +1787,9 @@ class Plugin:
                     if len(matches) == 1:
                         tmdb_id = str(matches[0].get("id") or "")
                 if not tmdb_id:
-                    query_title, parsed_year = normalize_match_title(candidate["provider_title"], removable)
+                    query_title, parsed_year = normalize_match_title(
+                        candidate["provider_title"], removable, leading_release_labels
+                    )
                     year = item.year or parsed_year
                     if not query_title or not year:
                         return {"status": "unmatched"}

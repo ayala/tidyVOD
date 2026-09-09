@@ -1,6 +1,6 @@
 {
   "name": "tidyVOD",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
   "author": "ayala",
   "license": "MIT",
@@ -14,6 +14,7 @@
     {"id":"keep_language_prefix","label":"Keep language prefix in cleaned titles","type":"boolean","default":true,"help_text":"Recommended. Produces titles such as ES| Die Hard (1989)."},
     {"id":"language_prefix_mappings","label":"Language prefix mappings","type":"string","default":"EN=en, ES=es, FR=fr, IT=it, DE=de, PT=pt, PL=pl, TR=tr, AR=ar, JA=ja, KO=ko","help_text":"Editable PREFIX=TMDB-language pairs."},
     {"id":"removable_title_tags","label":"Remove these provider title tags","type":"text","default":"4K, UHD, HDR, HDR10, HDR10+, Dolby Vision, DV, 2160p, 1080p, 720p, FHD, HEVC, H.265, H265, x265, AV1, BluRay, Blu-ray, WEB-DL, WEBRip, BDRip, REMUX, Dolby Atmos, Atmos, DDP5.1, AAC","help_text":"Comma-separated and editable. Used only for safe matching; final names come from confirmed TMDB records."},
+    {"id":"leading_release_labels","label":"Remove leading release labels","type":"text","default":"SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER","help_text":"Comma-separated and editable. Removed only at the beginning of a provider title when followed by a separator, such as SD/CAM – Moana (2026)."},
     {"id":"advanced_rules_help","label":"Advanced rules (optional)","type":"info","value":"Regex rules are available for bulk patterns and title cleanup."},
     {"id":"category_rules","label":"Advanced category rules (JSON)","type":"text","default":"[]","help_text":"Ordered regex rules with pattern, target, and optional content_type."},
     {"id":"title_rules","label":"Title cleanup rules (JSON)","type":"text","default":"[]","help_text":"Ordered regex rules with pattern, replacement, and optional content_type."},
