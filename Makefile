@@ -1,4 +1,4 @@
-VERSION := 0.8.11
+VERSION := 0.8.12
 PYTHON ?= python3
 RELEASE_DIR := releases/v$(VERSION)
 PACKAGE := $(RELEASE_DIR)/tidyvod-v$(VERSION).zip

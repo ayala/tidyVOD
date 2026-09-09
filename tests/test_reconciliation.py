@@ -315,7 +315,7 @@ class ReconciliationTests(unittest.TestCase):
                 },
                 True,
             )
-        self.assertEqual(field["label"], "TMDB watcher — WATCHING")
+        self.assertEqual(field["label"], "tidyVOD Status")
         self.assertIn("7 titles normalized", field["value"])
         self.assertIn("5 posters enriched", field["value"])
         self.assertIn("3 queued", field["value"])
@@ -380,7 +380,7 @@ class ReconciliationTests(unittest.TestCase):
         self.assertFalse(hide["default"])
         cleanup = next(field for field in fields if field["id"] == "category_tmdb_cleanup_movie_12")
         self.assertEqual(cleanup["label"], "TMDB Artwork")
-        self.assertTrue(cleanup["default"])
+        self.assertFalse(cleanup["default"])
         self.assertEqual(cleanup["help_text"], "Replace VOD provided artwork.")
         self.assertEqual(
             hide["help_text"],
@@ -392,16 +392,17 @@ class ReconciliationTests(unittest.TestCase):
             "10 movies • 0 in original category → 10 moved by tidyVOD • Provider",
         )
 
-    def test_tmdb_artwork_categories_default_active_movies_on(self):
+    def test_tmdb_artwork_categories_default_movies_and_series_off(self):
         categories = [
             types.SimpleNamespace(pk=12, category_type="movie"),
             types.SimpleNamespace(pk=13, category_type="movie"),
+            types.SimpleNamespace(pk=17, category_type="series"),
         ]
         sys.modules["apps.vod.models"].VODCategory = types.SimpleNamespace(
             objects=FakeEditorCategoryManager(categories)
         )
         selected = self.module.Plugin._selected_tmdb_artwork_categories({
-            "category_tmdb_cleanup_movie_13": False,
+            "category_tmdb_cleanup_movie_12": True,
             "category_tmdb_cleanup_series_17": True,
         })
         self.assertEqual(selected, {"movie": {12}, "series": {17}})

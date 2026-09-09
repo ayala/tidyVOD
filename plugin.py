@@ -65,7 +65,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.11"
+    version = "0.8.12"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -86,9 +86,9 @@ class Plugin:
         },
         {
             "id": "tmdb_cleanup_help",
-            "label": "Automatic TMDB titles and optional artwork",
+            "label": "What tidyVOD Does",
             "type": "info",
-            "value": "Official TMDB titles are applied automatically. Each category's TMDB Artwork switch controls poster replacement only. Language comes from the category/title prefix; unprefixed titles use English. Work runs in small batches during the one-minute watcher cycle, so large libraries take multiple passes; the watcher status shows how many remain. Uncertain matches are left unchanged.",
+            "value": "Work runs in small batches during the one-minute cycle, so large libraries take multiple passes; the status shows how many remain. Uncertain matches are left unchanged.",
         },
         {
             "id": "tmdb_api_key",
@@ -96,7 +96,6 @@ class Plugin:
             "type": "string",
             "input_type": "password",
             "default": "",
-            "help_text": "Optional when TMDB_API_KEY is already configured for Dispatcharr.",
         },
         {
             "id": "keep_language_prefix",
@@ -361,7 +360,7 @@ class Plugin:
             current_settings = {}
             watcher_status = {
                 "id": "tmdb_watcher_status",
-                "label": "TMDB watcher — status unavailable",
+                "label": "tidyVOD Status",
                 "type": "info",
                 "value": "Reload the plugin or use Show status for diagnostics.",
             }
@@ -452,7 +451,7 @@ class Plugin:
         )
         return {
             "id": "tmdb_watcher_status",
-            "label": f"TMDB watcher — {state}",
+            "label": "tidyVOD Status",
             "type": "info",
             "value": value,
         }
@@ -533,7 +532,7 @@ class Plugin:
                     "id": f"category_tmdb_cleanup_{content_type}_{category.pk}",
                     "label": "TMDB Artwork",
                     "type": "boolean",
-                    "default": content_type == "movie",
+                    "default": False,
                     "help_text": "Replace VOD provided artwork.",
                 })
         if not fields:
@@ -550,17 +549,9 @@ class Plugin:
         settings: dict[str, Any],
     ) -> dict[str, set[int]]:
         selected = selected_tmdb_cleanup_categories(settings)
-        from apps.vod.models import VODCategory
-
-        active_movie_ids = VODCategory.objects.filter(
-            category_type="movie",
-            m3u_relations__m3u_account__is_active=True,
-            m3u_relations__enabled=True,
-        ).values_list("pk", flat=True).distinct()
-        selected["movie"].update(
-            category_id for category_id in active_movie_ids
-            if bool(settings.get(f"category_tmdb_cleanup_movie_{category_id}", True))
-        )
+        active = Plugin._automatic_tmdb_categories()
+        for content_type in ("movie", "series"):
+            selected[content_type].intersection_update(active[content_type])
         return selected
 
     @staticmethod
