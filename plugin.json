@@ -1,6 +1,6 @@
 {
   "name": "tidyVOD",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
   "author": "ayala",
   "license": "MIT",
@@ -36,6 +36,7 @@
     {"id":"export_playlist","label":"Export playlist","description":"Write M3U (+ optional XMLTV) files to disk.","button_label":"Export","button_color":"green","confirm":{"title":"Export curated playlist?","message":"This writes/overwrites the stable output files and creates a timestamped snapshot."}},
     {"id":"reconcile_now","label":"Repair curated categories now","description":"Check new and previously curated VOD and repair category assignments using your saved mappings.","button_label":"Synchronize now","button_color":"green"},
     {"id":"tmdb_cleanup_now","label":"Run selected TMDB clean-up now","description":"Clean titles and posters in categories whose TMDB Clean-up switch is enabled.","button_label":"Clean selected VOD now","button_color":"green"},
+    {"id":"tmdb_cleanup_report","label":"TMDB clean-up report","description":"Show cleaned titles and detect poster assignments that need repair.","button_label":"Show cleaned titles","button_color":"blue"},
     {"id":"sync_status","label":"Synchronization status","description":"Check watcher health, including disabled, stale, or failed synchronization, and the last result.","button_label":"Show status","button_color":"blue"},
     {"id":"on_m3u_refresh","label":"Watch for VOD after M3U refresh","description":"Internal event notice; continuous synchronization waits for the separate VOD import.","events":["m3u_refresh"]}
   ]

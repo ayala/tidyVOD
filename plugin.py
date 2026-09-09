@@ -64,7 +64,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.3"
+    version = "0.8.4"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -271,6 +271,13 @@ class Plugin:
             "description": "Clean titles and posters in categories whose TMDB Clean-up switch is enabled.",
             "button_label": "Clean selected VOD now",
             "button_color": "green",
+        },
+        {
+            "id": "tmdb_cleanup_report",
+            "label": "TMDB clean-up report",
+            "description": "Show cleaned titles and detect poster assignments that need repair.",
+            "button_label": "Show cleaned titles",
+            "button_color": "blue",
         },
         {
             "id": "sync_status",
@@ -524,6 +531,8 @@ class Plugin:
                     if not acquired:
                         return {"status": "error", "message": "Synchronization is running. Please retry shortly."}
                     return self._run_tmdb_cleanup(settings, logger, limit=250)
+            if action == "tmdb_cleanup_report":
+                return self._tmdb_cleanup_report(settings)
             if action == "preview_export":
                 return self._run_export(settings, logger, dry_run=True)
             if action == "export_playlist":
@@ -1571,6 +1580,14 @@ class Plugin:
             ),
         )
 
+    @staticmethod
+    def _relation_tmdb_artwork_url(relation: Any) -> str | None:
+        props = relation.custom_properties or {}
+        detail = props.get("detailed_info", {}) if isinstance(props, dict) else {}
+        if not isinstance(detail, dict):
+            return None
+        return str(detail.get("movie_image") or "").strip() or None
+
     def _run_tmdb_cleanup(
         self, settings: dict[str, Any], logger: Any, *, limit: int
     ) -> dict[str, Any]:
@@ -1670,7 +1687,9 @@ class Plugin:
                     conflicts.add(key)
                     candidates.pop(key, None)
                     continue
-                if key not in conflicts:
+                if previous and key not in conflicts:
+                    previous["relations"].append(relation)
+                elif key not in conflicts:
                     candidates[key] = {
                         "kind": kind,
                         "media_type": "movie" if kind == "movie" else "tv",
@@ -1678,6 +1697,7 @@ class Plugin:
                         "prefix": prefix,
                         "language": language,
                         "provider_title": provider_title,
+                        "relations": [relation],
                     }
 
         counts["language_conflicts"] = len(conflicts)
@@ -1687,15 +1707,35 @@ class Plugin:
             props = item.custom_properties or {}
             marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
             current_logo = getattr(getattr(item, "logo", None), "url", None)
+            relation_artwork_ready = all(
+                self._relation_tmdb_artwork_url(relation) == marker.get("tmdb_cleanup_poster_url")
+                for relation in candidate["relations"]
+            )
             if (
                 marker.get("tmdb_cleanup_managed")
                 and marker.get("tmdb_cleanup_language") == candidate["language"]
                 and marker.get("tmdb_cleanup_keep_prefix") == keep_prefix
                 and marker.get("tmdb_cleanup_name") == item.name
                 and marker.get("tmdb_cleanup_poster_url") == current_logo
+                and relation_artwork_ready
             ):
                 counts["already_clean"] += 1
                 continue
+            if (
+                marker.get("tmdb_cleanup_managed")
+                and marker.get("tmdb_cleanup_name")
+                and marker.get("tmdb_cleanup_poster_url")
+                and marker.get("tmdb_cleanup_language") == candidate["language"]
+                and marker.get("tmdb_cleanup_keep_prefix") == keep_prefix
+            ):
+                candidate["cached_result"] = {
+                    "status": "ok",
+                    "tmdb_id": marker.get("tmdb_cleanup_tmdb_id", ""),
+                    "name": marker["tmdb_cleanup_name"],
+                    "poster_url": marker["tmdb_cleanup_poster_url"],
+                    "poster_language": marker.get("tmdb_cleanup_poster_language"),
+                    "cached": True,
+                }
             if len(pending) < limit:
                 pending.append(candidate)
             else:
@@ -1718,6 +1758,8 @@ class Plugin:
             return value
 
         def fetch(candidate: dict[str, Any]) -> dict[str, Any]:
+            if candidate.get("cached_result"):
+                return candidate["cached_result"]
             item = candidate["item"]
             media_type = candidate["media_type"]
             language = candidate["language"]
@@ -1798,6 +1840,7 @@ class Plugin:
         if any(result.get("status") == "unauthorized" for result in results):
             return {"status": "error", "changes": dict(counts), "message": "TMDB rejected the configured API key."}
 
+        relation_updates: dict[str, list[Any]] = {"movie": [], "series": []}
         with transaction.atomic():
             for candidate, result in zip(pending, results):
                 status = result.get("status", "request_error")
@@ -1835,6 +1878,35 @@ class Plugin:
                     counts["save_conflicts"] += 1
                     continue
                 counts["cleaned"] += 1
+                if result.get("cached"):
+                    counts["artwork_repairs"] += 1
+                for relation in candidate["relations"]:
+                    relation_props = dict(relation.custom_properties or {})
+                    relation_marker_value = relation_props.get(MARKER, {})
+                    relation_marker = (
+                        dict(relation_marker_value)
+                        if isinstance(relation_marker_value, dict) else {}
+                    )
+                    detail_value = relation_props.get("detailed_info", {})
+                    detail = dict(detail_value) if isinstance(detail_value, dict) else {}
+                    if not relation_marker.get("tmdb_relation_artwork_managed"):
+                        relation_marker["tmdb_original_relation_movie_image_present"] = "movie_image" in detail
+                        relation_marker["tmdb_original_relation_movie_image"] = detail.get("movie_image")
+                    relation_marker["tmdb_relation_artwork_managed"] = True
+                    relation_marker["tmdb_relation_artwork_url"] = result["poster_url"]
+                    detail["movie_image"] = result["poster_url"]
+                    relation_props["detailed_info"] = detail
+                    relation_props[MARKER] = relation_marker
+                    relation.custom_properties = relation_props
+                    relation_updates[candidate["kind"]].append(relation)
+            if relation_updates["movie"]:
+                M3UMovieRelation.objects.bulk_update(
+                    relation_updates["movie"], ["custom_properties"], batch_size=500
+                )
+            if relation_updates["series"]:
+                M3USeriesRelation.objects.bulk_update(
+                    relation_updates["series"], ["custom_properties"], batch_size=500
+                )
 
         return {
             "status": "ok",
@@ -1842,12 +1914,51 @@ class Plugin:
             "message": (
                 f"TMDB: {counts['selected_categories']} categories selected; "
                 f"{counts['cleaned']} titles/posters cleaned, {counts['already_clean']} already clean, "
+                f"{counts['artwork_repairs']} existing poster assignments repaired, "
                 f"{counts['ambiguous'] + counts['unmatched']} uncertain, "
                 f"{counts['missing_language_prefix']} missing a recognized category/title language prefix, "
                 f"{counts['invalid_language_override']} invalid language overrides, "
                 f"{counts['language_conflicts']} shared-language conflicts, "
                 f"{counts['no_clean_poster']} without a localized/English poster, "
                 f"{counts['request_error']} request errors, and {counts['remaining']} remaining."
+            ),
+        }
+
+    def _tmdb_cleanup_report(self, settings: dict[str, Any]) -> dict[str, Any]:
+        from apps.vod.models import M3UMovieRelation, M3USeriesRelation, Movie, Series
+
+        account_filter = self._account_filter(settings)
+        specs = (
+            ("movie", Movie, M3UMovieRelation, "movie_id"),
+            ("series", Series, M3USeriesRelation, "series_id"),
+        )
+        counts = Counter()
+        titles: list[str] = []
+        for kind, model, relation_model, id_field in specs:
+            ids = relation_model.objects.filter(**account_filter).values_list(id_field, flat=True)
+            items = model.objects.filter(
+                pk__in=ids,
+                **{f"custom_properties__{MARKER}__tmdb_cleanup_managed": True},
+            ).select_related("logo")
+            for item in items.iterator(chunk_size=500):
+                marker = (item.custom_properties or {}).get(MARKER, {})
+                counts[kind] += 1
+                expected = marker.get("tmdb_cleanup_poster_url")
+                current = getattr(getattr(item, "logo", None), "url", None)
+                if not expected or current != expected:
+                    counts["item_posters_need_repair"] += 1
+                if len(titles) < 20:
+                    titles.append(item.name)
+        total = counts["movie"] + counts["series"]
+        examples = ", ".join(titles) if titles else "none yet"
+        return {
+            "status": "ok",
+            "changes": dict(counts),
+            "samples": [{"type": "cleaned title", "change": title} for title in titles],
+            "message": (
+                f"{total} TMDB-managed titles ({counts['movie']} movies, {counts['series']} series); "
+                f"{counts['item_posters_need_repair']} item-level poster assignments need repair. "
+                f"First {len(titles)}: {examples}."
             ),
         }
 
@@ -1971,21 +2082,36 @@ class Plugin:
                 for relation in relation_model.objects.filter(**account_filter).iterator(chunk_size=1000):
                     props = dict(relation.custom_properties or {})
                     marker = props.get(MARKER)
-                    if not isinstance(marker, dict) or "original_category_id" not in marker:
+                    if not isinstance(marker, dict):
                         continue
-                    original = VODCategory.objects.filter(pk=marker.get("original_category_id")).first()
-                    if original is None and marker.get("original_category_name"):
-                        original, _ = VODCategory.objects.get_or_create(
-                            name=marker["original_category_name"],
-                            category_type="movie" if relation_model is M3UMovieRelation else "series",
-                        )
-                    relation.category = original
+                    touched = False
+                    if "original_category_id" in marker:
+                        original = VODCategory.objects.filter(pk=marker.get("original_category_id")).first()
+                        if original is None and marker.get("original_category_name"):
+                            original, _ = VODCategory.objects.get_or_create(
+                                name=marker["original_category_name"],
+                                category_type="movie" if relation_model is M3UMovieRelation else "series",
+                            )
+                        relation.category = original
+                        counts["categories"] += 1
+                        touched = True
+                    if marker.get("tmdb_relation_artwork_managed"):
+                        detail_value = props.get("detailed_info", {})
+                        detail = dict(detail_value) if isinstance(detail_value, dict) else {}
+                        if marker.get("tmdb_original_relation_movie_image_present"):
+                            detail["movie_image"] = marker.get("tmdb_original_relation_movie_image")
+                        else:
+                            detail.pop("movie_image", None)
+                        props["detailed_info"] = detail
+                        counts["relation_artwork"] += 1
+                        touched = True
+                    if not touched:
+                        continue
                     props.pop(MARKER, None)
                     relation.custom_properties = props
                     changed.append(relation)
                 if changed:
                     relation_model.objects.bulk_update(changed, ["category", "custom_properties"], batch_size=1000)
-                    counts["categories"] += len(changed)
 
             scoped_movie_ids = M3UMovieRelation.objects.filter(**account_filter).values_list("movie_id", flat=True)
             scoped_series_ids = M3USeriesRelation.objects.filter(**account_filter).values_list("series_id", flat=True)

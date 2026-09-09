@@ -331,6 +331,15 @@ class ReconciliationTests(unittest.TestCase):
             {"file_path": "/textless.jpg", "iso_639_1": None, "vote_count": 100},
         ], "es"))
 
+    def test_relation_level_tmdb_artwork_is_detected(self):
+        relation = types.SimpleNamespace(custom_properties={
+            "detailed_info": {"movie_image": "https://image.tmdb.org/t/p/w780/poster.jpg"}
+        })
+        self.assertEqual(
+            self.module.Plugin._relation_tmdb_artwork_url(relation),
+            "https://image.tmdb.org/t/p/w780/poster.jpg",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
