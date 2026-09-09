@@ -28,6 +28,7 @@ from .core import (
     category_language,
     comparable_title,
     formatted_tmdb_title,
+    match_title_candidates,
     normalize_match_title,
     parse_cleanup_tokens,
     parse_language_aliases,
@@ -62,7 +63,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.0"
+    version = "0.8.2"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -1685,24 +1686,29 @@ class Plugin:
                     year = item.year or parsed_year
                     if not query_title or not year:
                         return {"status": "unmatched"}
-                    params = {"api_key": api_key, "query": query_title, "language": language}
-                    params["primary_release_year" if media_type == "movie" else "first_air_date_year"] = year
-                    matches = get_json(f"search/{media_type}", params).get("results") or []
                     exact = []
-                    searched = comparable_title(query_title)
-                    for match in matches:
-                        date = str(match.get("release_date") if media_type == "movie" else match.get("first_air_date") or "")
-                        if not date.startswith(str(year)):
-                            continue
-                        titles = (
-                            (match.get("title"), match.get("original_title"))
-                            if media_type == "movie"
-                            else (match.get("name"), match.get("original_name"))
-                        )
-                        if searched in {comparable_title(str(value or "")) for value in titles}:
-                            exact.append(match)
+                    any_matches = []
+                    for search_title in match_title_candidates(query_title):
+                        params = {"api_key": api_key, "query": search_title, "language": language}
+                        params["primary_release_year" if media_type == "movie" else "first_air_date_year"] = year
+                        matches = get_json(f"search/{media_type}", params).get("results") or []
+                        any_matches.extend(matches)
+                        searched = comparable_title(search_title)
+                        for match in matches:
+                            date = str(match.get("release_date") if media_type == "movie" else match.get("first_air_date") or "")
+                            if not date.startswith(str(year)):
+                                continue
+                            titles = (
+                                (match.get("title"), match.get("original_title"))
+                                if media_type == "movie"
+                                else (match.get("name"), match.get("original_name"))
+                            )
+                            if searched in {comparable_title(str(value or "")) for value in titles}:
+                                exact.append(match)
+                        if exact:
+                            break
                     if len(exact) != 1:
-                        return {"status": "ambiguous" if exact or matches else "unmatched"}
+                        return {"status": "ambiguous" if exact or any_matches else "unmatched"}
                     tmdb_id = str(exact[0].get("id") or "")
                 detail = get_json(
                     f"{media_type}/{tmdb_id}",

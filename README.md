@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.0/tidyvod-v0.8.0.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.2/tidyvod-v0.8.2.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -118,6 +118,16 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Select localized or English TMDB posters while excluding untagged/textless art.
 - Reapply managed names and posters through the existing one-minute watcher.
 - Preserve TMDB cleanup selections in server and portable mapping backups.
+
+### 0.8.1 provider-credit matching
+
+- Safely retry title matching without a trailing two-to-four-word all-caps actor credit, such as `A Man Called Otto TOM HANKS`.
+- Refuse that heuristic when the entire provider title is uppercase.
+
+### 0.8.2 embedded-tag parsing
+
+- Remove configured tags regardless of whether they appear before or after the year.
+- Recognize provider title prefixes written as `EN|`, `EN:`, `EN -`, or with an en/em dash.
 
 Update the existing plugin; do not uninstall it. Existing settings and versioned mapping backups remain in place. After upgrading from 0.7.2, a one-time Dispatcharr restart is recommended to clear older watcher code in any long-lived worker (this interrupts active playback). Then, after a minute, use **Show status** to verify a fresh successful check without pressing Apply or Run.
 

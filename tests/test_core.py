@@ -13,6 +13,7 @@ from core import (
     parse_language_aliases,
     normalize_match_title,
     formatted_tmdb_title,
+    match_title_candidates,
     selected_category_mappings,
     selected_hidden_categories,
     selected_tmdb_cleanup_categories,
@@ -111,8 +112,22 @@ class RulesTests(unittest.TestCase):
             ("A Man Called Otto", 2022),
         )
         self.assertEqual(
+            normalize_match_title("EN - Blade 4K (1998)", tokens),
+            ("Blade", 1998),
+        )
+        self.assertEqual(
             formatted_tmdb_title("El peor vecino del mundo", 2022, "ES", True),
             "ES| El peor vecino del mundo (2022)",
+        )
+
+    def test_trailing_actor_candidate_requires_title_case(self):
+        self.assertEqual(
+            match_title_candidates("A Man Called Otto TOM HANKS"),
+            ["A Man Called Otto TOM HANKS", "A Man Called Otto"],
+        )
+        self.assertEqual(
+            match_title_candidates("A MAN CALLED OTTO TOM HANKS"),
+            ["A MAN CALLED OTTO TOM HANKS"],
         )
 
 if __name__ == "__main__":

@@ -15,6 +15,9 @@ CATEGORY_TMDB_PATTERN = re.compile(r"^category_tmdb_cleanup_(movie|series)_(\d+)
 LANGUAGE_PREFIX_PATTERN = re.compile(
     r"^\s*([A-Za-z]{2,3})(?:[-_]([A-Za-z]{2}))?\s*[|:]\s*"
 )
+PROVIDER_TITLE_LANGUAGE_PATTERN = re.compile(
+    r"^\s*[A-Za-z]{2,3}(?:[-_][A-Za-z]{2})?\s*(?:[|:]|[-–—]\s+)\s*"
+)
 DEFAULT_LANGUAGE_ALIASES = {
     "AR": "ar", "DE": "de", "EN": "en", "ENG": "en", "ES": "es",
     "FR": "fr", "FRE": "fr", "IT": "it", "JA": "ja", "JP": "ja",
@@ -226,7 +229,7 @@ def parse_cleanup_tokens(raw: Any) -> list[str]:
 
 def normalize_match_title(name: str, removable_tokens: Iterable[str]) -> tuple[str, int | None]:
     """Create a conservative TMDB search title and extract a reliable year."""
-    value = LANGUAGE_PREFIX_PATTERN.sub("", name or "", count=1)
+    value = PROVIDER_TITLE_LANGUAGE_PATTERN.sub("", name or "", count=1)
     years = list(re.finditer(r"(?<!\d)(18\d{2}|19\d{2}|20\d{2}|21\d{2})(?!\d)", value))
     year = int(years[-1].group(1)) if years else None
     if years:
@@ -243,6 +246,25 @@ def normalize_match_title(name: str, removable_tokens: Iterable[str]) -> tuple[s
 
 def comparable_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (value or "").casefold())
+
+
+def match_title_candidates(value: str) -> list[str]:
+    """Offer a safe alternate without a trailing all-caps actor/credit name."""
+    candidates = [value]
+    words = value.split()
+    suffix_start = len(words)
+    while suffix_start and len(words) - suffix_start < 4:
+        word = words[suffix_start - 1].strip("-'’.")
+        if len(word) < 2 or not any(character.isalpha() for character in word) or word != word.upper():
+            break
+        suffix_start -= 1
+    suffix_size = len(words) - suffix_start
+    title_part = " ".join(words[:suffix_start]).strip()
+    # Require a two-word credit and mixed/lower case in the retained title.
+    # This refuses to reinterpret an entirely upper-case provider title.
+    if 2 <= suffix_size <= 4 and title_part and any(character.islower() for character in title_part):
+        candidates.append(title_part)
+    return candidates
 
 
 def formatted_tmdb_title(
