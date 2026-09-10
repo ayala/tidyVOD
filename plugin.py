@@ -48,6 +48,18 @@ from .core import (
 
 
 MARKER = "vodarranger"
+DEFAULT_LANGUAGE_PREFIX_MAPPINGS = (
+    "EN=en, ES=es, FR=fr, IT=it, DE=de, PT=pt, PL=pl, TR=tr, "
+    "AR=ar, JA=ja, KO=ko"
+)
+DEFAULT_REMOVABLE_TITLE_TAGS = (
+    "4K, UHD, HDR, HDR10, HDR10+, Dolby Vision, DV, 2160p, 1080p, 720p, "
+    "FHD, HEVC, H.265, H265, x265, AV1, BluRay, Blu-ray, WEB-DL, WEBRip, "
+    "BDRip, REMUX, Dolby Atmos, Atmos, DDP5.1, AAC"
+)
+DEFAULT_LEADING_RELEASE_LABELS = (
+    "SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER"
+)
 
 
 @dataclass(frozen=True)
@@ -65,7 +77,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.12"
+    version = "0.8.13"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -115,21 +127,21 @@ class Plugin:
             "id": "language_prefix_mappings",
             "label": "Language prefix mappings",
             "type": "string",
-            "default": "EN=en, ES=es, FR=fr, IT=it, DE=de, PT=pt, PL=pl, TR=tr, AR=ar, JA=ja, KO=ko",
+            "default": DEFAULT_LANGUAGE_PREFIX_MAPPINGS,
             "help_text": "Editable PREFIX=TMDB-language pairs. Add provider-specific prefixes here.",
         },
         {
             "id": "removable_title_tags",
             "label": "Remove these provider title tags",
             "type": "text",
-            "default": "4K, UHD, HDR, HDR10, HDR10+, Dolby Vision, DV, 2160p, 1080p, 720p, FHD, HEVC, H.265, H265, x265, AV1, BluRay, Blu-ray, WEB-DL, WEBRip, BDRip, REMUX, Dolby Atmos, Atmos, DDP5.1, AAC",
+            "default": DEFAULT_REMOVABLE_TITLE_TAGS,
             "help_text": "Comma-separated and editable. These tokens are used only to form safe searches; the final title comes from a confirmed TMDB record.",
         },
         {
             "id": "leading_release_labels",
             "label": "Remove leading release labels",
             "type": "text",
-            "default": "SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER",
+            "default": DEFAULT_LEADING_RELEASE_LABELS,
             "help_text": "Comma-separated and editable. These are removed only when they begin a provider title and are followed by a separator, such as SD/CAM – Moana (2026).",
         },
         {
@@ -446,6 +458,7 @@ class Plugin:
             f"{changes.get('ambiguous', 0) + changes.get('unmatched', 0)} uncertain, "
             f"{changes.get('no_clean_poster', 0)} without a suitable poster, "
             f"{changes.get('request_error', 0)} request errors, "
+            f"{changes.get('deferred', 0)} deferred for retry, "
             f"{changes.get('remaining', 0)} queued. "
             "Reopen or reload this panel to refresh the status."
         )
@@ -1754,14 +1767,20 @@ class Plugin:
             }
         from apps.vod.models import M3UMovieRelation, M3USeriesRelation, VODCategory, VODLogo
 
-        aliases = parse_language_aliases(settings.get("language_prefix_mappings", ""))
-        removable = parse_cleanup_tokens(settings.get("removable_title_tags", ""))
-        leading_release_labels = parse_cleanup_tokens(settings.get(
-            "leading_release_labels",
-            "SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER",
-        ))
-        keep_prefix = bool(settings.get("keep_language_prefix", True))
-        player_safe_titles = bool(settings.get("player_safe_tmdb_titles", True))
+        aliases = parse_language_aliases(
+            settings.get("language_prefix_mappings")
+            or DEFAULT_LANGUAGE_PREFIX_MAPPINGS
+        )
+        removable = parse_cleanup_tokens(
+            settings.get("removable_title_tags") or DEFAULT_REMOVABLE_TITLE_TAGS
+        )
+        leading_release_labels = parse_cleanup_tokens(
+            settings.get("leading_release_labels") or DEFAULT_LEADING_RELEASE_LABELS
+        )
+        keep_prefix_setting = settings.get("keep_language_prefix")
+        keep_prefix = True if keep_prefix_setting is None else bool(keep_prefix_setting)
+        player_safe_setting = settings.get("player_safe_tmdb_titles")
+        player_safe_titles = True if player_safe_setting is None else bool(player_safe_setting)
         source_categories = VODCategory.objects.filter(
             pk__in=set().union(*selected.values())
         ).only("pk", "name", "category_type")
@@ -1841,6 +1860,32 @@ class Plugin:
             item = candidate["item"]
             props = item.custom_properties or {}
             marker = props.get(MARKER, {}) if isinstance(props, dict) else {}
+            attempt_signature = json.dumps(
+                [
+                    candidate["provider_title"],
+                    candidate["language"],
+                    str(item.tmdb_id or ""),
+                    item.year,
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            attempt_status = str(marker.get("tmdb_cleanup_attempt_status") or "")
+            attempt_at = float(marker.get("tmdb_cleanup_attempt_epoch", 0) or 0)
+            retry_after = {
+                "request_error": 60 * 60,
+                "unmatched": 7 * 24 * 60 * 60,
+                "ambiguous": 7 * 24 * 60 * 60,
+            }.get(attempt_status, 0)
+            if (
+                retry_after
+                and marker.get("tmdb_cleanup_attempt_signature") == attempt_signature
+                and time.time() - attempt_at < retry_after
+            ):
+                counts[attempt_status] += 1
+                counts["deferred"] += 1
+                continue
+            candidate["attempt_signature"] = attempt_signature
             current_logo = getattr(getattr(item, "logo", None), "url", None)
             relation_artwork_managed = any(
                 bool(((relation.custom_properties or {}).get(MARKER) or {}).get(
@@ -1850,16 +1895,24 @@ class Plugin:
             )
             relation_artwork_ready = (
                 candidate["artwork_enabled"]
-                and bool(marker.get("tmdb_cleanup_poster_url"))
-                and all(
-                    self._relation_tmdb_artwork_url(relation)
-                    == marker.get("tmdb_cleanup_poster_url")
-                    for relation in candidate["relations"]
+                and (
+                    bool(marker.get("tmdb_cleanup_no_clean_poster"))
+                    or (
+                        bool(marker.get("tmdb_cleanup_poster_url"))
+                        and all(
+                            self._relation_tmdb_artwork_url(relation)
+                            == marker.get("tmdb_cleanup_poster_url")
+                            for relation in candidate["relations"]
+                        )
+                    )
                 )
             )
             artwork_state_ready = (
-                relation_artwork_ready
-                and marker.get("tmdb_cleanup_poster_url") == current_logo
+                bool(marker.get("tmdb_cleanup_no_clean_poster"))
+                or (
+                    relation_artwork_ready
+                    and marker.get("tmdb_cleanup_poster_url") == current_logo
+                )
                 if candidate["artwork_enabled"]
                 else not relation_artwork_managed
                 and not bool(marker.get("tmdb_artwork_enabled", False))
@@ -1940,6 +1993,7 @@ class Plugin:
             language_code = language.split("-", 1)[0]
             tmdb_id = str(item.tmdb_id or "").strip()
             try:
+                detail = None
                 if not tmdb_id and item.imdb_id:
                     payload = get_json(
                         f"find/{item.imdb_id}",
@@ -1949,6 +2003,24 @@ class Plugin:
                     matches = payload.get(key) or []
                     if len(matches) == 1:
                         tmdb_id = str(matches[0].get("id") or "")
+                if tmdb_id:
+                    try:
+                        detail = get_json(
+                            f"{media_type}/{tmdb_id}",
+                            {
+                                "api_key": api_key,
+                                "language": language,
+                                "append_to_response": "images",
+                                "include_image_language": f"{language_code},en",
+                            },
+                        )
+                    except OSError as exc:
+                        if "HTTP 404" not in str(exc):
+                            raise
+                        # Provider metadata can contain a stale or invalid TMDB ID.
+                        # Fall back to the same conservative title/year search used
+                        # for records without an ID instead of blocking every pass.
+                        tmdb_id = ""
                 if not tmdb_id:
                     query_title, parsed_year = normalize_match_title(
                         candidate["provider_title"], removable, leading_release_labels
@@ -1980,15 +2052,16 @@ class Plugin:
                     if len(exact) != 1:
                         return {"status": "ambiguous" if exact or any_matches else "unmatched"}
                     tmdb_id = str(exact[0].get("id") or "")
-                detail = get_json(
-                    f"{media_type}/{tmdb_id}",
-                    {
-                        "api_key": api_key,
-                        "language": language,
-                        "append_to_response": "images",
-                        "include_image_language": f"{language_code},en",
-                    },
-                )
+                if detail is None:
+                    detail = get_json(
+                        f"{media_type}/{tmdb_id}",
+                        {
+                            "api_key": api_key,
+                            "language": language,
+                            "append_to_response": "images",
+                            "include_image_language": f"{language_code},en",
+                        },
+                    )
                 title = detail.get("title") if media_type == "movie" else detail.get("name")
                 date = detail.get("release_date") if media_type == "movie" else detail.get("first_air_date")
                 try:
@@ -2038,6 +2111,20 @@ class Plugin:
                 status = result.get("status", "request_error")
                 if status != "ok":
                     counts[status] += 1
+                    if status in {"request_error", "unmatched", "ambiguous"}:
+                        item = candidate["item"]
+                        item.refresh_from_db(fields=["custom_properties"])
+                        props = dict(item.custom_properties or {})
+                        marker_value = props.get(MARKER, {})
+                        marker = dict(marker_value) if isinstance(marker_value, dict) else {}
+                        marker.update({
+                            "tmdb_cleanup_attempt_status": status,
+                            "tmdb_cleanup_attempt_signature": candidate["attempt_signature"],
+                            "tmdb_cleanup_attempt_epoch": time.time(),
+                        })
+                        props[MARKER] = marker
+                        item.custom_properties = props
+                        item.save(update_fields=["custom_properties", "updated_at"])
                     continue
                 item = candidate["item"]
                 poster_url = result.get("poster_url")
@@ -2067,12 +2154,23 @@ class Plugin:
                     "tmdb_cleanup_name": result["name"],
                     "tmdb_artwork_enabled": artwork_enabled,
                 })
+                for key in (
+                    "tmdb_cleanup_attempt_status",
+                    "tmdb_cleanup_attempt_signature",
+                    "tmdb_cleanup_attempt_epoch",
+                ):
+                    marker.pop(key, None)
                 if artwork_enabled:
+                    marker.pop("tmdb_cleanup_no_clean_poster", None)
                     marker["tmdb_cleanup_poster_language"] = result["poster_language"]
                     marker["tmdb_cleanup_poster_url"] = poster_url
                 else:
                     marker.pop("tmdb_cleanup_poster_language", None)
                     marker.pop("tmdb_cleanup_poster_url", None)
+                    if result.get("no_clean_poster") and candidate["artwork_enabled"]:
+                        marker["tmdb_cleanup_no_clean_poster"] = True
+                    else:
+                        marker.pop("tmdb_cleanup_no_clean_poster", None)
                 props[MARKER] = marker
                 previous_name = item.name
                 item.name = result["name"]

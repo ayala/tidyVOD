@@ -160,6 +160,13 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Keep selected TMDB posters in a relation field that survives Dispatcharr's on-demand provider metadata refresh.
 - Report both shared-item and provider-relation poster assignments that need repair.
 
+### 0.8.13 TMDB queue progression
+
+- Prevents unmatched, ambiguous, request-error, and no-poster records from monopolizing every batch.
+- Retries transient request failures after one hour and uncertain matches after seven days.
+- Falls back to a conservative title/year search when a provider supplies a stale TMDB ID.
+- Applies built-in language and provider-tag defaults even when Dispatcharr has not persisted untouched settings.
+
 ### 0.8.12 concise status copy
 
 - Rename the status heading to **tidyVOD Status**, simplify the explanation heading, and remove the misleading TMDB environment-key hint.

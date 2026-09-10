@@ -7,6 +7,7 @@ import types
 import unittest
 from unittest.mock import Mock, patch
 from datetime import datetime, timezone, timedelta
+from urllib.error import HTTPError
 
 
 class FakeQ:
@@ -283,7 +284,11 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(plugin._reconcile_status_result()["health"], "disabled")
         config.enabled = True
         config.settings = {}
-        self.assertEqual(plugin._reconcile_status_result()["health"], "idle")
+        with patch.object(
+            plugin, "_automatic_tmdb_categories",
+            return_value={"movie": set(), "series": set()},
+        ):
+            self.assertEqual(plugin._reconcile_status_result()["health"], "idle")
 
     def test_tmdb_watcher_field_shows_state_time_and_counts(self):
         plugin = self.module.Plugin.__new__(self.module.Plugin)
@@ -526,8 +531,168 @@ class ReconciliationTests(unittest.TestCase):
             relation.custom_properties["info"]["movie_image"],
             "https://provider/poster.jpg",
         )
-        self.assertEqual(result["changes"]["titles_normalized"], 1)
+        self.assertEqual(result["changes"].get("titles_normalized"), 1, result)
         self.assertEqual(result["changes"].get("artwork_enriched", 0), 0)
+
+    def test_no_clean_poster_is_recorded_and_does_not_block_next_pass(self):
+        category = types.SimpleNamespace(pk=12, name="Movies", category_type="movie")
+        provider_logo = types.SimpleNamespace(pk=7, url="https://provider/poster.jpg")
+        item = types.SimpleNamespace(
+            pk=101, tmdb_id="123", imdb_id="", year=1989,
+            name="Die Hard 4K (1989)", logo=provider_logo, logo_id=7,
+            custom_properties={},
+        )
+        item.refresh_from_db = Mock()
+        item.save = Mock()
+        relation = types.SimpleNamespace(
+            pk=201, category=category, category_id=12, movie=item,
+            custom_properties={"basic_data": {"name": item.name}},
+        )
+        vod_models = sys.modules["apps.vod.models"]
+        vod_models.VODCategory = types.SimpleNamespace(
+            objects=FakeEditorCategoryManager([category]))
+        vod_models.M3UMovieRelation = types.SimpleNamespace(
+            objects=FakeRelationManager([relation]))
+        vod_models.M3USeriesRelation = types.SimpleNamespace(
+            objects=FakeRelationManager([]))
+        vod_models.VODLogo = types.SimpleNamespace(objects=FakeLogoManager())
+        plugin = self.module.Plugin.__new__(self.module.Plugin)
+        plugin._account_filter = Mock(return_value={})
+        detail = {
+            "id": 123, "title": "Die Hard", "release_date": "1989-07-15",
+            "images": {"posters": [{
+                "file_path": "/textless.jpg", "iso_639_1": None, "vote_count": 20,
+            }]},
+        }
+        settings = {
+            "tmdb_api_key": "test", "keep_language_prefix": True,
+            "category_tmdb_cleanup_movie_12": True,
+        }
+        with (
+            patch.object(plugin, "_automatic_tmdb_categories", return_value={
+                "movie": {12}, "series": set(),
+            }),
+            patch("urllib.request.urlopen", return_value=FakeHTTPResponse(detail)),
+        ):
+            first = plugin._run_tmdb_cleanup(settings, Mock(), limit=10)
+        self.assertEqual(first["changes"]["no_clean_poster"], 1)
+        self.assertTrue(
+            item.custom_properties["vodarranger"]["tmdb_cleanup_no_clean_poster"])
+
+        no_request = Mock()
+        with (
+            patch.object(plugin, "_automatic_tmdb_categories", return_value={
+                "movie": {12}, "series": set(),
+            }),
+            patch("urllib.request.urlopen", no_request),
+        ):
+            second = plugin._run_tmdb_cleanup(settings, Mock(), limit=10)
+        self.assertEqual(
+            second["changes"].get("already_clean"), 1,
+            (second, item.__dict__, relation.custom_properties),
+        )
+        no_request.assert_not_called()
+
+    def test_stale_tmdb_id_falls_back_to_title_and_year_search(self):
+        category = types.SimpleNamespace(pk=12, name="Movies", category_type="movie")
+        item = types.SimpleNamespace(
+            pk=101, tmdb_id="999", imdb_id="", year=1989,
+            name="Die Hard 4K (1989)", logo=None, logo_id=None,
+            custom_properties={},
+        )
+        item.refresh_from_db = Mock()
+        item.save = Mock()
+        relation = types.SimpleNamespace(
+            pk=201, category=category, category_id=12, movie=item,
+            custom_properties={"basic_data": {"name": item.name}},
+        )
+        vod_models = sys.modules["apps.vod.models"]
+        vod_models.VODCategory = types.SimpleNamespace(
+            objects=FakeEditorCategoryManager([category]))
+        vod_models.M3UMovieRelation = types.SimpleNamespace(
+            objects=FakeRelationManager([relation]))
+        vod_models.M3USeriesRelation = types.SimpleNamespace(
+            objects=FakeRelationManager([]))
+        vod_models.VODLogo = types.SimpleNamespace(objects=FakeLogoManager())
+        plugin = self.module.Plugin.__new__(self.module.Plugin)
+        plugin._account_filter = Mock(return_value={})
+        requested = []
+
+        def urlopen(request, timeout=12):
+            requested.append(request.full_url)
+            if "/movie/999?" in request.full_url:
+                raise HTTPError(request.full_url, 404, "Not Found", None, None)
+            if "/search/movie?" in request.full_url:
+                return FakeHTTPResponse({"results": [{
+                    "id": 123, "title": "Die Hard", "original_title": "Die Hard",
+                    "release_date": "1989-07-15",
+                }]})
+            if "/movie/123?" in request.full_url:
+                return FakeHTTPResponse({
+                    "id": 123, "title": "Die Hard", "release_date": "1989-07-15",
+                    "images": {"posters": []},
+                })
+            raise AssertionError(request.full_url)
+
+        with (
+            patch.object(plugin, "_automatic_tmdb_categories", return_value={
+                "movie": {12}, "series": set(),
+            }),
+            patch("urllib.request.urlopen", side_effect=urlopen),
+        ):
+            result = plugin._run_tmdb_cleanup(
+                {
+                    "tmdb_api_key": "test",
+                    "keep_language_prefix": None,
+                    "player_safe_tmdb_titles": None,
+                    "language_prefix_mappings": None,
+                    "removable_title_tags": None,
+                    "leading_release_labels": None,
+                },
+                Mock(), limit=10,
+            )
+        self.assertEqual(
+            result["changes"].get("titles_normalized"), 1,
+            (result, requested),
+        )
+        self.assertEqual(item.name, "EN - Die Hard (1989)")
+        self.assertTrue(any("/movie/999?" in url for url in requested))
+        self.assertTrue(any("/search/movie?" in url for url in requested))
+        self.assertTrue(any("/movie/123?" in url for url in requested))
+
+    def test_unmatched_title_is_deferred_instead_of_retried_every_pass(self):
+        category = types.SimpleNamespace(pk=12, name="Movies", category_type="movie")
+        item = types.SimpleNamespace(
+            pk=101, tmdb_id="", imdb_id="", year=None,
+            name="Unknown Provider Release", logo=None, logo_id=None,
+            custom_properties={},
+        )
+        item.refresh_from_db = Mock()
+        item.save = Mock()
+        relation = types.SimpleNamespace(
+            pk=201, category=category, category_id=12, movie=item,
+            custom_properties={"basic_data": {"name": item.name}},
+        )
+        vod_models = sys.modules["apps.vod.models"]
+        vod_models.VODCategory = types.SimpleNamespace(
+            objects=FakeEditorCategoryManager([category]))
+        vod_models.M3UMovieRelation = types.SimpleNamespace(
+            objects=FakeRelationManager([relation]))
+        vod_models.M3USeriesRelation = types.SimpleNamespace(
+            objects=FakeRelationManager([]))
+        vod_models.VODLogo = types.SimpleNamespace(objects=FakeLogoManager())
+        plugin = self.module.Plugin.__new__(self.module.Plugin)
+        plugin._account_filter = Mock(return_value={})
+        settings = {"tmdb_api_key": "test"}
+        with patch.object(plugin, "_automatic_tmdb_categories", return_value={
+            "movie": {12}, "series": set(),
+        }):
+            first = plugin._run_tmdb_cleanup(settings, Mock(), limit=10)
+            second = plugin._run_tmdb_cleanup(settings, Mock(), limit=10)
+        self.assertEqual(first["changes"]["unmatched"], 1)
+        self.assertEqual(second["changes"]["unmatched"], 1)
+        self.assertEqual(second["changes"]["deferred"], 1)
+        self.assertEqual(item.save.call_count, 1)
 
     def test_relation_level_tmdb_artwork_is_detected(self):
         relation = types.SimpleNamespace(custom_properties={
