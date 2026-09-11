@@ -76,7 +76,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.14"
+    version = "0.8.15"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -121,13 +121,6 @@ class Plugin:
             "type": "boolean",
             "default": True,
             "help_text": "Recommended. Produces titles such as ES| Die Hard (1989) so localized copies remain recognizable.",
-        },
-        {
-            "id": "player_safe_tmdb_titles",
-            "label": "Player-safe TMDB titles",
-            "type": "boolean",
-            "default": True,
-            "help_text": "Recommended. Uses a language prefix such as ES - and substitutes visually equivalent brackets that IPTV apps do not hide; for example [REC]² becomes ES - ［REC］² (2009).",
         },
         {
             "id": "language_prefix_mappings",
@@ -400,7 +393,7 @@ class Plugin:
             + [
                 base["tmdb_cleanup_help"], base["tmdb_cleanup_enabled"],
                 base["tmdb_api_key"],
-                base["keep_language_prefix"], base["player_safe_tmdb_titles"],
+                base["keep_language_prefix"],
                 base["language_prefix_mappings"], base["removable_title_tags"],
                 base["leading_release_labels"],
             ]
@@ -1797,8 +1790,9 @@ class Plugin:
         )
         keep_prefix_setting = settings.get("keep_language_prefix")
         keep_prefix = True if keep_prefix_setting is None else bool(keep_prefix_setting)
-        player_safe_setting = settings.get("player_safe_tmdb_titles")
-        player_safe_titles = True if player_safe_setting is None else bool(player_safe_setting)
+        # Always protect bracketed official titles from IPTV clients that treat
+        # square brackets as hidden metadata tags (for example, [REC]²).
+        player_safe_titles = True
         source_categories = VODCategory.objects.filter(
             pk__in=set().union(*selected.values())
         ).only("pk", "name", "category_type")

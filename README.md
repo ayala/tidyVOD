@@ -27,7 +27,7 @@ https://raw.githubusercontent.com/ayala/tidyVOD/refs/heads/main/manifest.json
 
 Install or update tidyVOD from the plugin browser. The internal plugin key remains unchanged, so existing mappings and backups carry forward. Enable it, reload the plugin list so detected category fields appear, then use **Preview** or **Preview export** before applying changes.
 
-For a manual install, upload `releases/v0.8.14/tidyvod-v0.8.14.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
+For a manual install, upload `releases/v0.8.15/tidyvod-v0.8.15.zip` through **Dispatcharr → Settings → Plugins → Install Plugin**.
 
 Dispatcharr v0.24.0 or newer is required.
 
@@ -156,9 +156,14 @@ Use **Synchronize now** for an immediate category repair. **Show status** report
 - Store matched TMDB names in a player-safe form by default, using language prefixes such as `ES -`.
 - Preserve real bracketed names in clients that otherwise treat them as tags by substituting visually equivalent fullwidth brackets; `[REC]²` becomes `ES - ［REC］² (2009)`.
 - Normalize Unicode sequel digits only during matching, so `[REC]²` compares as `REC2` while the official superscript remains in the displayed title.
-- Allow exact TMDB title styling by turning off **Player-safe TMDB titles**.
+- Apply player-safe bracket handling automatically whenever TMDB Cleanup is enabled.
 - Keep selected TMDB posters in a relation field that survives Dispatcharr's on-demand provider metadata refresh.
 - Report both shared-item and provider-relation poster assignments that need repair.
+
+### 0.8.15 automatic player-safe titles
+
+- Remove the **Player-safe TMDB titles** setting.
+- Always preserve bracketed official titles in IPTV clients by applying the compatibility substitution automatically during TMDB Cleanup.
 
 ### 0.8.14 independent category curation and TMDB cleanup
 

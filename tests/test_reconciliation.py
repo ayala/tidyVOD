@@ -422,6 +422,10 @@ class ReconciliationTests(unittest.TestCase):
         )
         self.assertFalse(toggle["default"])
         self.assertIn("several days", toggle["help_text"])
+        self.assertFalse(any(
+            field["id"] == "player_safe_tmdb_titles"
+            for field in self.module.Plugin.BASE_FIELDS
+        ))
 
     def test_automatic_tmdb_normalization_includes_movies_and_series(self):
         categories = [
@@ -655,7 +659,6 @@ class ReconciliationTests(unittest.TestCase):
                 {
                     "tmdb_api_key": "test",
                     "keep_language_prefix": None,
-                    "player_safe_tmdb_titles": None,
                     "language_prefix_mappings": None,
                     "removable_title_tags": None,
                     "leading_release_labels": None,

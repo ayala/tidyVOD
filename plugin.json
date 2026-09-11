@@ -1,6 +1,6 @@
 {
   "name": "tidyVOD",
-  "version": "0.8.14",
+  "version": "0.8.15",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
   "author": "ayala",
   "license": "MIT",
@@ -13,7 +13,6 @@
     {"id":"tmdb_cleanup_enabled","label":"TMDB Cleanup","type":"boolean","default":false,"help_text":"Replace provider titles and artwork using TMDB. Large libraries can take several days depending on the amount of VOD supplied by your provider."},
     {"id":"tmdb_api_key","label":"TMDB API key","type":"string","input_type":"password","default":""},
     {"id":"keep_language_prefix","label":"Keep language prefix in cleaned titles","type":"boolean","default":true,"help_text":"Recommended. Produces titles such as ES| Die Hard (1989)."},
-    {"id":"player_safe_tmdb_titles","label":"Player-safe TMDB titles","type":"boolean","default":true,"help_text":"Recommended. Uses a language prefix such as ES - and substitutes visually equivalent brackets that IPTV apps do not hide; for example [REC]² becomes ES - ［REC］² (2009)."},
     {"id":"language_prefix_mappings","label":"Language prefix mappings","type":"string","default":"EN=en, ES=es, FR=fr, IT=it, DE=de, PT=pt, PL=pl, TR=tr, AR=ar, JA=ja, KO=ko","help_text":"Editable PREFIX=TMDB-language pairs."},
     {"id":"removable_title_tags","label":"Remove these provider title tags","type":"text","default":"4K, UHD, HDR, HDR10, HDR10+, Dolby Vision, DV, 2160p, 1080p, 720p, FHD, HEVC, H.265, H265, x265, AV1, BluRay, Blu-ray, WEB-DL, WEBRip, BDRip, REMUX, Dolby Atmos, Atmos, DDP5.1, AAC","help_text":"Comma-separated and editable. Used only for safe matching; final names come from confirmed TMDB records."},
     {"id":"leading_release_labels","label":"Remove leading release labels","type":"text","default":"SD/CAM, CAM, HDCAM, HD-CAM, HDTS, HD-TS, TS, TELESYNC, TC, SCR, SCREENER","help_text":"Comma-separated and editable. Removed only at the beginning of a provider title when followed by a separator, such as SD/CAM – Moana (2026)."},
