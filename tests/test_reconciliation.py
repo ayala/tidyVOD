@@ -206,6 +206,7 @@ class ReconciliationTests(unittest.TestCase):
         plugin._mapping_entries = lambda settings: []
         plugin._resolved_category_mappings = lambda settings, mappings, **kwargs: mappings
         plugin._account_filter = lambda settings: {}
+        plugin._run_tmdb_cleanup = Mock()
         result = plugin._perform_category_reconciliation(
             {"category_override_movie_12": "Netflix"},
             {"movie": {12: "Netflix"}, "series": {}},
@@ -219,6 +220,7 @@ class ReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(len(movie_manager.updated), 1)
         self.assertEqual(result["changes"]["categories"], 1)
+        plugin._run_tmdb_cleanup.assert_not_called()
 
     def test_constructor_starts_watcher_without_action(self):
         with patch.object(self.module.Plugin, "_ensure_reconciler_started") as start:
@@ -316,7 +318,7 @@ class ReconciliationTests(unittest.TestCase):
             field = plugin._tmdb_watcher_field(
                 {
                     "sync_curated_categories": True,
-                    "category_tmdb_cleanup_movie_12": True,
+                    "tmdb_cleanup_enabled": True,
                 },
                 True,
             )
@@ -368,13 +370,11 @@ class ReconciliationTests(unittest.TestCase):
                 "movie_category_heading",
                 "category_override_movie_12",
                 "category_hidden_movie_12",
-                "category_tmdb_cleanup_movie_12",
                 "movie_series_section_gap_1",
                 "movie_series_section_gap_2",
                 "series_category_heading",
                 "category_override_series_22",
                 "category_hidden_series_22",
-                "category_tmdb_cleanup_series_22",
             ],
         )
         spacers = [field for field in fields if field["id"].startswith("movie_series_section_gap_")]
@@ -383,10 +383,9 @@ class ReconciliationTests(unittest.TestCase):
         hide = next(field for field in fields if field["id"] == "category_hidden_movie_12")
         self.assertEqual(hide["label"], "Hide this category")
         self.assertFalse(hide["default"])
-        cleanup = next(field for field in fields if field["id"] == "category_tmdb_cleanup_movie_12")
-        self.assertEqual(cleanup["label"], "TMDB Artwork")
-        self.assertFalse(cleanup["default"])
-        self.assertEqual(cleanup["help_text"], "Replace VOD provided artwork.")
+        self.assertFalse(any(
+            field["id"].startswith("category_tmdb_cleanup_") for field in fields
+        ))
         self.assertEqual(
             hide["help_text"],
             "Turn ON to remove category. Turn OFF and refresh VOD to restore available titles.",
@@ -397,7 +396,7 @@ class ReconciliationTests(unittest.TestCase):
             "10 movies • 0 in original category → 10 moved by tidyVOD • Provider",
         )
 
-    def test_tmdb_artwork_categories_default_movies_and_series_off(self):
+    def test_global_tmdb_cleanup_is_all_or_nothing_and_defaults_off(self):
         categories = [
             types.SimpleNamespace(pk=12, category_type="movie"),
             types.SimpleNamespace(pk=13, category_type="movie"),
@@ -410,7 +409,19 @@ class ReconciliationTests(unittest.TestCase):
             "category_tmdb_cleanup_movie_12": True,
             "category_tmdb_cleanup_series_17": True,
         })
-        self.assertEqual(selected, {"movie": {12}, "series": {17}})
+        self.assertEqual(selected, {"movie": set(), "series": set()})
+        self.assertEqual(
+            self.module.Plugin._selected_tmdb_artwork_categories({
+                "tmdb_cleanup_enabled": True,
+            }),
+            {"movie": {12, 13}, "series": {17}},
+        )
+        toggle = next(
+            field for field in self.module.Plugin.BASE_FIELDS
+            if field["id"] == "tmdb_cleanup_enabled"
+        )
+        self.assertFalse(toggle["default"])
+        self.assertIn("several days", toggle["help_text"])
 
     def test_automatic_tmdb_normalization_includes_movies_and_series(self):
         categories = [
@@ -566,7 +577,7 @@ class ReconciliationTests(unittest.TestCase):
         }
         settings = {
             "tmdb_api_key": "test", "keep_language_prefix": True,
-            "category_tmdb_cleanup_movie_12": True,
+            "tmdb_cleanup_enabled": True,
         }
         with (
             patch.object(plugin, "_automatic_tmdb_categories", return_value={

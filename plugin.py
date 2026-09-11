@@ -43,7 +43,6 @@ from .core import (
     parse_account_names,
     selected_category_mappings,
     selected_hidden_categories,
-    selected_tmdb_cleanup_categories,
 )
 
 
@@ -77,7 +76,7 @@ class ExportEntry:
 
 class Plugin:
     name = "tidyVOD"
-    version = "0.8.13"
+    version = "0.8.14"
     description = "Rename, combine, and export curated VOD categories in one plugin."
     author = "ayala"
     help_url = "https://github.com/ayala/tidyVOD"
@@ -100,7 +99,14 @@ class Plugin:
             "id": "tmdb_cleanup_help",
             "label": "What tidyVOD Does",
             "type": "info",
-            "value": "Work runs in small batches during the one-minute cycle, so large libraries take multiple passes; the status shows how many remain. Uncertain matches are left unchanged.",
+            "value": "Category curation runs independently from optional TMDB cleanup.",
+        },
+        {
+            "id": "tmdb_cleanup_enabled",
+            "label": "TMDB Cleanup",
+            "type": "boolean",
+            "default": False,
+            "help_text": "Replace provider titles and artwork using TMDB. Large libraries can take several days depending on the amount of VOD supplied by your provider.",
         },
         {
             "id": "tmdb_api_key",
@@ -293,9 +299,9 @@ class Plugin:
         },
         {
             "id": "tmdb_cleanup_now",
-            "label": "Run TMDB normalization now",
-            "description": "Normalize titles in all active VOD categories and enrich posters only where TMDB Artwork is enabled.",
-            "button_label": "Normalize VOD now",
+            "label": "Run TMDB cleanup now",
+            "description": "Normalize titles and replace artwork in all active VOD categories when TMDB Cleanup is enabled.",
+            "button_label": "Run TMDB cleanup",
             "button_color": "green",
         },
         {
@@ -392,7 +398,8 @@ class Plugin:
             [base["category_editor_help"], base["account_names"]]
             + [watcher_status]
             + [
-                base["tmdb_cleanup_help"], base["tmdb_api_key"],
+                base["tmdb_cleanup_help"], base["tmdb_cleanup_enabled"],
+                base["tmdb_api_key"],
                 base["keep_language_prefix"], base["player_safe_tmdb_titles"],
                 base["language_prefix_mappings"], base["removable_title_tags"],
                 base["leading_release_labels"],
@@ -407,7 +414,11 @@ class Plugin:
         self, settings: dict[str, Any], plugin_enabled: bool
     ) -> dict[str, Any]:
         status = self._read_reconcile_status()
-        normalization_categories = self._automatic_tmdb_categories()
+        cleanup_enabled = bool(settings.get("tmdb_cleanup_enabled", False))
+        normalization_categories = (
+            self._automatic_tmdb_categories()
+            if cleanup_enabled else {"movie": set(), "series": set()}
+        )
         selected = sum(len(values) for values in normalization_categories.values())
         artwork_selected = sum(
             len(values) for values in self._selected_tmdb_artwork_categories(settings).values()
@@ -418,6 +429,7 @@ class Plugin:
         enabled = (
             plugin_enabled
             and bool(settings.get("sync_curated_categories", True))
+            and cleanup_enabled
             and selected > 0
             and thread_alive
         )
@@ -448,20 +460,26 @@ class Plugin:
         last_cleaned = status.get("last_cleaned_at")
         tmdb = status.get("last_tmdb_result") or status.get("tmdb_cleanup") or {}
         changes = tmdb.get("changes") or {}
-        value = (
-            f"{selected} active categories normalize automatically • last pass {local_time(last_run)} • "
-            f"last changed artwork/titles {local_time(last_cleaned)}. "
-            f"{artwork_selected} artwork categories enabled. Last result: "
-            f"{changes.get('titles_normalized', 0)} titles normalized, "
-            f"{changes.get('artwork_enriched', 0)} posters enriched, "
-            f"{changes.get('already_clean', 0)} already clean, "
-            f"{changes.get('ambiguous', 0) + changes.get('unmatched', 0)} uncertain, "
-            f"{changes.get('no_clean_poster', 0)} without a suitable poster, "
-            f"{changes.get('request_error', 0)} request errors, "
-            f"{changes.get('deferred', 0)} deferred for retry, "
-            f"{changes.get('remaining', 0)} queued. "
-            "Reopen or reload this panel to refresh the status."
-        )
+        if not cleanup_enabled:
+            value = (
+                "TMDB Cleanup is OFF. Category renaming, combining, hiding, "
+                "and synchronization continue independently."
+            )
+        else:
+            value = (
+                f"{selected} active categories normalize automatically • last pass {local_time(last_run)} • "
+                f"last changed artwork/titles {local_time(last_cleaned)}. "
+                f"{artwork_selected} artwork categories enabled. Last result: "
+                f"{changes.get('titles_normalized', 0)} titles normalized, "
+                f"{changes.get('artwork_enriched', 0)} posters enriched, "
+                f"{changes.get('already_clean', 0)} already clean, "
+                f"{changes.get('ambiguous', 0) + changes.get('unmatched', 0)} uncertain, "
+                f"{changes.get('no_clean_poster', 0)} without a suitable poster, "
+                f"{changes.get('request_error', 0)} request errors, "
+                f"{changes.get('deferred', 0)} deferred for retry, "
+                f"{changes.get('remaining', 0)} queued. "
+                "Reopen or reload this panel to refresh the status."
+            )
         return {
             "id": "tmdb_watcher_status",
             "label": "tidyVOD Status",
@@ -541,13 +559,6 @@ class Plugin:
                     "default": False,
                     "help_text": "Turn ON to remove category. Turn OFF and refresh VOD to restore available titles.",
                 })
-                fields.append({
-                    "id": f"category_tmdb_cleanup_{content_type}_{category.pk}",
-                    "label": "TMDB Artwork",
-                    "type": "boolean",
-                    "default": False,
-                    "help_text": "Replace VOD provided artwork.",
-                })
         if not fields:
             fields.append({
                 "id": "no_categories_detected",
@@ -561,11 +572,9 @@ class Plugin:
     def _selected_tmdb_artwork_categories(
         settings: dict[str, Any],
     ) -> dict[str, set[int]]:
-        selected = selected_tmdb_cleanup_categories(settings)
-        active = Plugin._automatic_tmdb_categories()
-        for content_type in ("movie", "series"):
-            selected[content_type].intersection_update(active[content_type])
-        return selected
+        if not bool(settings.get("tmdb_cleanup_enabled", False)):
+            return {"movie": set(), "series": set()}
+        return Plugin._automatic_tmdb_categories()
 
     @staticmethod
     def _automatic_tmdb_categories() -> dict[str, set[int]]:
@@ -643,6 +652,11 @@ class Plugin:
             if action == "sync_status":
                 return self._reconcile_status_result()
             if action == "tmdb_cleanup_now":
+                if not bool(settings.get("tmdb_cleanup_enabled", False)):
+                    return {
+                        "status": "ok",
+                        "message": "TMDB Cleanup is off. Enable it in Settings before running this action.",
+                    }
                 with self._reconcile_lock() as acquired:
                     if not acquired:
                         return {"status": "error", "message": "Synchronization is running. Please retry shortly."}
@@ -791,7 +805,11 @@ class Plugin:
     ) -> dict[str, Any]:
         mappings = selected_category_mappings(settings)
         hidden = selected_hidden_categories(settings)
-        tmdb_selected = self._automatic_tmdb_categories()
+        tmdb_selected = (
+            self._automatic_tmdb_categories()
+            if bool(settings.get("tmdb_cleanup_enabled", False))
+            else {"movie": set(), "series": set()}
+        )
         mapping_count = sum(len(group) for group in mappings.values())
         hidden_count = sum(len(group) for group in hidden.values())
         tmdb_count = sum(len(group) for group in tmdb_selected.values())
@@ -967,7 +985,16 @@ class Plugin:
                         batch_size=1000,
                     )
 
-        tmdb_result = self._run_tmdb_cleanup(settings, logger, limit=25)
+        cleanup_enabled = bool(settings.get("tmdb_cleanup_enabled", False))
+        tmdb_result = (
+            self._run_tmdb_cleanup(settings, logger, limit=25)
+            if cleanup_enabled
+            else {
+                "status": "ok",
+                "changes": {},
+                "message": "TMDB Cleanup is off; category curation continues.",
+            }
+        )
         export_result = None
         if (counts["categories"] or counts["hidden_assignments"]) and bool(settings.get("auto_export", False)):
             export_result = self._run_export(settings, logger, dry_run=False)
@@ -981,7 +1008,7 @@ class Plugin:
             )
         else:
             category_message = "No category assignments needed repair."
-        if any(self._automatic_tmdb_categories().values()):
+        if cleanup_enabled:
             category_message += f" {tmdb_result.get('message', 'TMDB normalization did not return a result.')}"
         result = {
             "status": "ok",
@@ -1118,9 +1145,10 @@ class Plugin:
         if config is None or not config.enabled or not bool((config.settings or {}).get("sync_curated_categories", True)):
             return {"status": "ok", "health": "disabled", "synchronization": status,
                     "message": "Automatic synchronization is disabled. Enable tidyVOD and Keep curated categories synchronized to protect your categories."}
+        cleanup_enabled = bool((config.settings or {}).get("tmdb_cleanup_enabled", False))
         if not (any(selected_category_mappings(config.settings or {}).values())
                 or any(selected_hidden_categories(config.settings or {}).values())
-                or any(self._automatic_tmdb_categories().values())):
+                or (cleanup_enabled and any(self._automatic_tmdb_categories().values()))):
             return {"status": "ok", "health": "idle", "synchronization": status,
                     "message": "No category mappings are saved; nothing to synchronize."}
         if not status:
@@ -1453,7 +1481,6 @@ class Plugin:
         selected: dict[tuple[str, int], dict[str, Any]] = {}
         override_pattern = re.compile(r"^category_override_(movie|series)_(\d+)$")
         hidden_pattern = re.compile(r"^category_hidden_(movie|series)_(\d+)$")
-        tmdb_pattern = re.compile(r"^category_tmdb_cleanup_(movie|series)_(\d+)$")
         for key, value in settings.items():
             match = override_pattern.fullmatch(str(key))
             if match:
@@ -1465,13 +1492,8 @@ class Plugin:
                 content_type, category_id = match.group(1), int(match.group(2))
                 selected.setdefault((content_type, category_id), {})["hidden"] = bool(value)
                 continue
-            match = tmdb_pattern.fullmatch(str(key))
-            if match:
-                content_type, category_id = match.group(1), int(match.group(2))
-                selected.setdefault((content_type, category_id), {})["tmdb_cleanup"] = bool(value)
-                continue
         selected = {key: values for key, values in selected.items()
-                    if values.get("clean_name") or values.get("hidden") or values.get("tmdb_cleanup")}
+                    if values.get("clean_name") or values.get("hidden")}
         category_ids = [category_id for _, category_id in selected]
         categories = {
             category.pk: category
@@ -1495,7 +1517,6 @@ class Plugin:
                 "provider_name": category.name if category else previous_names.get((content_type, category_id)),
                 "clean_name": values.get("clean_name", ""),
                 "hidden": bool(values.get("hidden", False)),
-                "tmdb_cleanup": bool(values.get("tmdb_cleanup", False)),
             })
         return sorted(
             entries,
@@ -1644,16 +1665,13 @@ class Plugin:
                 category = by_name.get((content_type, str(entry["provider_name"]).casefold()))
             clean_name = str(entry.get("clean_name") or "").strip()
             hidden = bool(entry.get("hidden", False))
-            tmdb_cleanup = bool(entry.get("tmdb_cleanup", False))
-            if category is None or (not clean_name and not hidden and not tmdb_cleanup):
+            if category is None or (not clean_name and not hidden):
                 missing += 1
                 continue
             if clean_name:
                 restored[f"category_override_{content_type}_{category.pk}"] = clean_name
             if hidden:
                 restored[f"category_hidden_{content_type}_{category.pk}"] = True
-            if tmdb_cleanup:
-                restored[f"category_tmdb_cleanup_{content_type}_{category.pk}"] = True
             restored_categories.add((content_type, category.pk))
 
         with transaction.atomic():

@@ -1,6 +1,6 @@
 {
   "name": "tidyVOD",
-  "version": "0.8.13",
+  "version": "0.8.14",
   "description": "Rename, combine, and export curated VOD categories in one plugin.",
   "author": "ayala",
   "license": "MIT",
@@ -9,8 +9,9 @@
   "fields": [
     {"id":"category_editor_help","label":"Category editor","type":"info","value":"Enter a clean name beside any provider category, or use Hide this category to stop importing it and remove its existing VOD. Hidden categories remain here so they can be restored."},
     {"id":"account_names","label":"Limit to provider accounts","type":"string","default":"","help_text":"Optional comma-separated Dispatcharr M3U account names. Blank means all active accounts."},
-    {"id":"tmdb_cleanup_help","label":"TMDB Clean-up","type":"info","value":"Enable TMDB Clean-up beneath only the categories you want managed. Category prefixes select localized titles and posters; uncertain matches are left unchanged."},
-    {"id":"tmdb_api_key","label":"TMDB API key","type":"string","input_type":"password","default":"","help_text":"Optional when TMDB_API_KEY is already configured for Dispatcharr."},
+    {"id":"tmdb_cleanup_help","label":"What tidyVOD Does","type":"info","value":"Category curation runs independently from optional TMDB cleanup."},
+    {"id":"tmdb_cleanup_enabled","label":"TMDB Cleanup","type":"boolean","default":false,"help_text":"Replace provider titles and artwork using TMDB. Large libraries can take several days depending on the amount of VOD supplied by your provider."},
+    {"id":"tmdb_api_key","label":"TMDB API key","type":"string","input_type":"password","default":""},
     {"id":"keep_language_prefix","label":"Keep language prefix in cleaned titles","type":"boolean","default":true,"help_text":"Recommended. Produces titles such as ES| Die Hard (1989)."},
     {"id":"player_safe_tmdb_titles","label":"Player-safe TMDB titles","type":"boolean","default":true,"help_text":"Recommended. Uses a language prefix such as ES - and substitutes visually equivalent brackets that IPTV apps do not hide; for example [REC]² becomes ES - ［REC］² (2009)."},
     {"id":"language_prefix_mappings","label":"Language prefix mappings","type":"string","default":"EN=en, ES=es, FR=fr, IT=it, DE=de, PT=pt, PL=pl, TR=tr, AR=ar, JA=ja, KO=ko","help_text":"Editable PREFIX=TMDB-language pairs."},
@@ -37,7 +38,7 @@
     {"id":"preview_export","label":"Preview export","description":"Compute counts for the current settings without writing files.","button_label":"Preview export","button_color":"blue"},
     {"id":"export_playlist","label":"Export playlist","description":"Write M3U (+ optional XMLTV) files to disk.","button_label":"Export","button_color":"green","confirm":{"title":"Export curated playlist?","message":"This writes/overwrites the stable output files and creates a timestamped snapshot."}},
     {"id":"reconcile_now","label":"Repair curated categories now","description":"Check new and previously curated VOD and repair category assignments using your saved mappings.","button_label":"Synchronize now","button_color":"green"},
-    {"id":"tmdb_cleanup_now","label":"Run selected TMDB clean-up now","description":"Clean titles and posters in categories whose TMDB Clean-up switch is enabled.","button_label":"Clean selected VOD now","button_color":"green"},
+    {"id":"tmdb_cleanup_now","label":"Run TMDB cleanup now","description":"Normalize titles and replace artwork in all active VOD categories when TMDB Cleanup is enabled.","button_label":"Run TMDB cleanup","button_color":"green"},
     {"id":"tmdb_cleanup_report","label":"TMDB clean-up report","description":"Show cleaned titles and detect poster assignments that need repair.","button_label":"Show cleaned titles","button_color":"blue"},
     {"id":"sync_status","label":"Synchronization status","description":"Check watcher health, including disabled, stale, or failed synchronization, and the last result.","button_label":"Show status","button_color":"blue"},
     {"id":"on_m3u_refresh","label":"Watch for VOD after M3U refresh","description":"Internal event notice; continuous synchronization waits for the separate VOD import.","events":["m3u_refresh"]}
